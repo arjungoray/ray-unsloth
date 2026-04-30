@@ -53,6 +53,14 @@ sample = sampler.sample(
 
 See `examples/sft_loop.py` for a minimal local SFT loop.
 
+For a stricter end-to-end check, run the overfit smoke test. It trains one
+canary answer for several LoRA steps, samples from the saved adapter, and fails
+if generation is empty, punctuation-only, or missing the trained answer:
+
+```bash
+python examples/overfit_smoke_test.py --config configs/example.yaml
+```
+
 The default `configs/example.yaml` keeps Ray orchestration local and sends the
 Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
 adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests

@@ -4,7 +4,7 @@ ray:
   ignore_reinit_error: true
 
 model:
-  base_model: unsloth/Qwen3.5-4B
+  base_model: unsloth/Qwen3-4B
   max_seq_length: 1024
   dtype: bfloat16
   load_in_4bit: true
@@ -47,4 +47,4 @@ modal:
 
 checkpoint_root: /checkpoints
 supported_models:
-  - unsloth/Qwen3.5-4B
+  - unsloth/Qwen3-4B

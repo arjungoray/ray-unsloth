@@ -205,6 +205,7 @@ class UnslothEngine:
         loss_fn_config: dict[str, Any] | None = None,
     ) -> ForwardBackwardOutput:
         del loss_fn_config
+        import torch
         from unsloth import FastLanguageModel
 
         if loss_fn != "cross_entropy":
@@ -214,6 +215,8 @@ class UnslothEngine:
         FastLanguageModel.for_training(self.model)
         self._ensure_optimizer()
         loss, _outputs = self._cross_entropy_loss(data)
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"Non-finite training loss: {float(loss.detach().cpu())}")
         loss.backward()
         value = float(loss.detach().cpu())
         return ForwardBackwardOutput(loss=value, metrics={"loss": value})
@@ -245,8 +248,13 @@ class UnslothEngine:
         import torch
 
         optimizer = self._ensure_optimizer(adam_params)
+        trainable_parameters = [param for param in self.model.parameters() if param.requires_grad]
         if adam_params.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), adam_params.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                trainable_parameters,
+                adam_params.max_grad_norm,
+                error_if_nonfinite=True,
+            )
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         self.step += 1
