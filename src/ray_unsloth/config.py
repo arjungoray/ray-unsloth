@@ -59,11 +59,24 @@ class ResourceConfig:
 
 
 @dataclass(slots=True)
+class ModalConfig:
+    enabled: bool = False
+    app_name: str = "ray-unsloth"
+    gpu: str = "L4"
+    timeout: int = 1800
+    scaledown_window: int = 300
+    volume_name: str = "ray-unsloth-checkpoints"
+    volume_mount_path: str = "/checkpoints"
+    python_version: str = "3.10"
+
+
+@dataclass(slots=True)
 class RuntimeConfig:
     ray: RayConfig = field(default_factory=RayConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     lora: LoRAConfig = field(default_factory=LoRAConfig)
     resources: ResourceConfig = field(default_factory=ResourceConfig)
+    modal: ModalConfig = field(default_factory=ModalConfig)
     checkpoint_root: str = "checkpoints"
     supported_models: list[str] = field(default_factory=list)
 
@@ -81,6 +94,7 @@ class RuntimeConfig:
             model=ModelConfig(**data.get("model", {})),
             lora=LoRAConfig(**data.get("lora", {})),
             resources=ResourceConfig(**data.get("resources", {})),
+            modal=ModalConfig(**data.get("modal", {})),
             checkpoint_root=data.get("checkpoint_root", "checkpoints"),
             supported_models=list(data.get("supported_models", [])),
         )

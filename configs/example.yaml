@@ -4,12 +4,12 @@ ray:
   ignore_reinit_error: true
 
 model:
-  base_model: unsloth/Qwen2.5-7B-Instruct-bnb-4bit
-  max_seq_length: 2048
+  base_model: unsloth/Qwen3.5-4B
+  max_seq_length: 1024
   dtype: bfloat16
   load_in_4bit: true
   fast_inference: false
-  gpu_memory_utilization: 0.8
+  gpu_memory_utilization: 0.7
   trust_remote_code: true
 
 lora:
@@ -28,13 +28,23 @@ lora:
   use_rslora: false
 
 resources:
-  trainer_num_gpus: 1.0
-  trainer_num_cpus: 1.0
-  sampler_num_gpus: 1.0
-  sampler_num_cpus: 1.0
+  trainer_num_gpus: 0.0
+  trainer_num_cpus: 0.25
+  sampler_num_gpus: 0.0
+  sampler_num_cpus: 0.25
   sampler_replicas: 1
   placement_strategy: PACK
 
-checkpoint_root: checkpoints
+modal:
+  enabled: true
+  app_name: ray-unsloth
+  gpu: T4
+  timeout: 1800
+  scaledown_window: 300
+  volume_name: ray-unsloth-checkpoints
+  volume_mount_path: /checkpoints
+  python_version: "3.10"
+
+checkpoint_root: /checkpoints
 supported_models:
-  - unsloth/Qwen2.5-7B-Instruct-bnb-4bit
+  - unsloth/Qwen3.5-4B

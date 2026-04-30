@@ -16,12 +16,16 @@ def test_runtime_config_from_dict():
             "model": {"base_model": "test/model"},
             "lora": {"rank": 8},
             "resources": {"sampler_replicas": 2},
+            "modal": {"enabled": True, "gpu": "T4", "volume_name": "test-volume"},
         }
     )
 
     assert config.model.base_model == "test/model"
     assert config.lora.rank == 8
     assert config.resources.sampler_replicas == 2
+    assert config.modal.enabled is True
+    assert config.modal.gpu == "T4"
+    assert config.modal.volume_name == "test-volume"
 
 
 def test_atomic_checkpoint_manifest(tmp_path: Path):

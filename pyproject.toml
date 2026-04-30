@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=82.0.1", "wheel>=0.47.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,21 +10,23 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
-  "ray>=2.42.0",
-  "pyyaml>=6.0.0",
-  "torch>=2.2.0",
-  "transformers>=4.44.0",
-  "bitsandbytes>=0.43.0",
+  "ray>=2.55.1",
+  "pyyaml>=6.0.3",
+  "torch>=2.10.0,<2.11.0",
+  "transformers>=5.5.0,<5.5.1",
+  "bitsandbytes>=0.49.2",
 ]
 
 [project.optional-dependencies]
 unsloth = [
-  "unsloth",
-  "unsloth-zoo",
-  "vllm",
+  "unsloth>=2026.4.8",
+  "unsloth-zoo>=2026.4.9",
+]
+modal = [
+  "modal>=1.4.2",
 ]
 dev = [
-  "pytest>=8.0.0",
+  "pytest>=9.0.3",
 ]
 
 [tool.setuptools.packages.find]

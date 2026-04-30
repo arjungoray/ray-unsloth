@@ -1,13 +1,21 @@
+import sys
+from types import SimpleNamespace
+
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams
+from ray_unsloth.clients import service as service_module
 from ray_unsloth.clients.sampling import SamplingClient
+from ray_unsloth.clients.service import ServiceClient
 from ray_unsloth.clients.training import TrainingClient
+from ray_unsloth.clients._remote import call
+from ray_unsloth.config import ModelConfig
+from ray_unsloth.runtime.modal import ModalActorHandle
 from ray_unsloth.types import (
+    CheckpointRef,
     ForwardBackwardOutput,
     GeneratedSequence,
     OptimStepResult,
     SampleResponse,
     SaveWeightsForSamplerResponse,
-    CheckpointRef,
 )
 
 
@@ -56,6 +64,22 @@ class FakeService:
         return SamplingClient(session_id="sample", actors=[FakeSamplerActor()])
 
 
+class FakeRuntimeSession:
+    def __init__(self, config):
+        self.config = config
+
+
+class FakeModalRuntime:
+    def invoke(self, **kwargs):
+        return {
+            "actor_kind": kwargs["actor_kind"],
+            "session_id": kwargs["session_id"],
+            "method_name": kwargs["method_name"],
+            "args": kwargs["args"],
+            "kwargs": kwargs["kwargs"],
+        }
+
+
 def test_training_client_primitives_return_futures():
     client = TrainingClient(session_id="train", actor=FakeTrainerActor(), service=FakeService())
     datum = Datum(model_input=ModelInput.from_ints([1, 2]))
@@ -86,3 +110,53 @@ def test_sampling_client_round_robin_and_sample_future():
     client.compute_logprobs(ModelInput.from_ints([1, 2])).result()
 
     assert actors[0].calls == 1
+
+
+def test_service_client_selects_modal_session(monkeypatch):
+    monkeypatch.setattr(service_module, "ModalSession", FakeRuntimeSession)
+
+    client = ServiceClient({"modal": {"enabled": True}})
+
+    assert isinstance(client._session, FakeRuntimeSession)
+    assert client.get_server_capabilities().features["runtime_backend"] == "modal"
+
+
+def test_modal_actor_handle_matches_remote_call_shape():
+    actor = ModalActorHandle(
+        session=FakeModalRuntime(),
+        actor_kind="trainer",
+        session_id="train-1",
+        init_kwargs={"session_id": "train-1"},
+    )
+
+    result = call(actor, "forward_backward", [Datum(model_input=ModelInput.from_ints([1]))]).result()
+
+    assert result["actor_kind"] == "trainer"
+    assert result["session_id"] == "train-1"
+    assert result["method_name"] == "forward_backward"
+    assert isinstance(result["args"][0][0], Datum)
+
+
+def test_modal_actor_handle_get_tokenizer_loads_locally(monkeypatch):
+    calls = []
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "tokenizer"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(AutoTokenizer=FakeAutoTokenizer),
+    )
+    actor = ModalActorHandle(
+        session=FakeModalRuntime(),
+        actor_kind="trainer",
+        session_id="train-1",
+        init_kwargs={"model_config": ModelConfig(base_model="test/model", trust_remote_code=False)},
+    )
+
+    assert call(actor, "get_tokenizer").result() == "tokenizer"
+    assert calls == [(("test/model",), {"trust_remote_code": False})]

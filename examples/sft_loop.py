@@ -34,7 +34,7 @@ def main() -> None:
     sample = sampler.sample(
         ModelInput.from_ints(prompt_encoded["input_ids"]),
         num_samples=1,
-        sampling_params=SamplingParams(max_tokens=64, temperature=0.7),
+        sampling_params=SamplingParams(max_tokens=32, temperature=0.0),
     ).result()
     print(sample.sequences[0].text)
 

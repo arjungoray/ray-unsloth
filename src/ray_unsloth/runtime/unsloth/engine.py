@@ -265,15 +265,19 @@ class UnslothEngine:
         sampling_params = sampling_params or SamplingParams()
         prompt_tokens = prompt.to_ints() if isinstance(prompt, ModelInput) else list(prompt)
         input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self.model.device)
+        do_sample = sampling_params.temperature > 0
         generation_kwargs = {
             "max_new_tokens": sampling_params.max_tokens,
-            "temperature": sampling_params.temperature,
-            "top_p": sampling_params.top_p,
-            "do_sample": sampling_params.temperature > 0,
+            "do_sample": do_sample,
             "num_return_sequences": num_samples,
             "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+            "remove_invalid_values": True,
+            "renormalize_logits": True,
         }
-        if sampling_params.top_k is not None:
+        if do_sample:
+            generation_kwargs["temperature"] = sampling_params.temperature
+            generation_kwargs["top_p"] = sampling_params.top_p
+        if do_sample and sampling_params.top_k is not None:
             generation_kwargs["top_k"] = sampling_params.top_k
         if sampling_params.seed is not None:
             torch.manual_seed(sampling_params.seed)

@@ -16,6 +16,13 @@ Install the package for local development:
 pip install -e ".[dev,unsloth]"
 ```
 
+For the Modal-backed smoke test, install the Modal extra and authenticate once:
+
+```bash
+pip install -e ".[dev,modal]"
+modal setup
+```
+
 Create a service from the example runtime config, run one supervised
 fine-tuning step, save adapter weights, and sample from a new sampler actor:
 
@@ -46,12 +53,23 @@ sample = sampler.sample(
 
 See `examples/sft_loop.py` for a minimal local SFT loop.
 
+The default `configs/example.yaml` keeps Ray orchestration local and sends the
+Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
+adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests
+zero GPUs from local Ray so it can run from a laptop:
+
+```bash
+python examples/sft_loop.py
+```
+
 ## Current Features
 
 - Tinker-style public clients: `ServiceClient`, `TrainingClient`, and
   `SamplingClient`.
 - Ray-backed trainer and sampler actors with configurable CPU/GPU resources,
   namespaces, placement strategy, and sampler replica count.
+- Modal-backed GPU execution for resource-efficient smoke tests while keeping
+  the Python training loop and Ray orchestration local.
 - Unsloth model loading with LoRA configuration, 4-bit loading, dtype,
   sequence length, target modules, RS-LoRA toggle, and fast inference settings
   driven by YAML or dictionaries.

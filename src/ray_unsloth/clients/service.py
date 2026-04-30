@@ -7,6 +7,7 @@ from typing import Any
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.training import TrainingClient
 from ray_unsloth.config import RuntimeConfig, load_config
+from ray_unsloth.runtime.modal import ModalSession
 from ray_unsloth.runtime.ray import RaySession
 from ray_unsloth.types import GetServerCapabilitiesResponse
 
@@ -16,7 +17,7 @@ class ServiceClient:
 
     def __init__(self, config: str | RuntimeConfig | dict[str, Any] | None = None):
         self.config = load_config(config)
-        self._ray_session = RaySession(self.config)
+        self._session = ModalSession(self.config) if self.config.modal.enabled else RaySession(self.config)
 
     def get_server_capabilities(self) -> GetServerCapabilitiesResponse:
         supported = self.config.supported_models or [self.config.model.base_model]
@@ -27,6 +28,7 @@ class ServiceClient:
                 "losses": ["cross_entropy"],
                 "checkpointing": True,
                 "ray_namespace": self.config.ray.namespace,
+                "runtime_backend": "modal" if self.config.modal.enabled else "ray",
             },
         )
 
@@ -41,7 +43,7 @@ class ServiceClient:
         # Accept extra Tinker-style keyword fields that are represented by config
         # in this MVP, while keeping the call source-compatible.
         del kwargs
-        session_id, actor = self._ray_session.create_training_actor(
+        session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             metadata=metadata,
@@ -57,7 +59,7 @@ class ServiceClient:
         **kwargs,
     ) -> SamplingClient:
         del kwargs
-        session_id, actors = self._ray_session.create_sampler_actors(
+        session_id, actors = self._session.create_sampler_actors(
             base_model=base_model,
             model_path=model_path,
             replicas=replicas,
@@ -68,7 +70,7 @@ class ServiceClient:
         base_model = kwargs.pop("base_model", None)
         rank = kwargs.pop("rank", None)
         del kwargs
-        session_id, actor = self._ray_session.create_training_actor(
+        session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             model_path=path,
@@ -80,7 +82,7 @@ class ServiceClient:
         base_model = kwargs.pop("base_model", None)
         rank = kwargs.pop("rank", None)
         del kwargs
-        session_id, actor = self._ray_session.create_training_actor(
+        session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             model_path=path,
