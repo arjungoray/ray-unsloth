@@ -31,10 +31,16 @@ class SamplerActorImpl:
         prompt: ModelInput | list[int],
         num_samples: int = 1,
         sampling_params: SamplingParams | None = None,
-        **kwargs,
+        include_prompt_logprobs: bool = False,
+        topk_prompt_logprobs: int = 0,
     ):
-        del kwargs
-        return self.engine.sample(prompt, num_samples=num_samples, sampling_params=sampling_params)
+        return self.engine.sample(
+            prompt,
+            num_samples=num_samples,
+            sampling_params=sampling_params,
+            include_prompt_logprobs=include_prompt_logprobs,
+            topk_prompt_logprobs=topk_prompt_logprobs,
+        )
 
     def compute_logprobs(self, prompt: ModelInput | list[int]):
         return self.engine.compute_logprobs(prompt)

@@ -19,6 +19,7 @@ class TrainerActorImpl:
         checkpoint_root: str,
         model_path: str | None = None,
         with_optimizer: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.engine = UnslothEngine(
             session_id=session_id,
@@ -27,6 +28,7 @@ class TrainerActorImpl:
             checkpoint_root=checkpoint_root,
             model_path=model_path,
             with_optimizer=with_optimizer,
+            metadata=metadata or {},
         )
 
     def get_tokenizer(self):

@@ -5,8 +5,10 @@ from ray_unsloth.checkpoints import (
     base_manifest,
     checkpoint_ref,
     read_manifest,
+    resolve_path,
     write_manifest,
 )
+from ray_unsloth.clients.rest import RestClient
 from ray_unsloth.config import RuntimeConfig
 
 
@@ -50,3 +52,32 @@ def test_atomic_checkpoint_manifest(tmp_path: Path):
     assert (target / "weights.txt").read_text(encoding="utf-8") == "ok"
     assert manifest["step"] == 3
     assert ref.has_optimizer is True
+
+
+def test_tinker_local_path_resolution(tmp_path: Path):
+    assert resolve_path(f"tinker://local/{tmp_path}") == tmp_path.resolve()
+
+
+def test_rest_client_lists_and_publishes_checkpoints(tmp_path: Path):
+    target = tmp_path / "state-step-1"
+    target.mkdir()
+    write_manifest(
+        target,
+        base_manifest(
+            kind="training_state",
+            step=1,
+            base_model="base",
+            lora={"rank": 4},
+            has_optimizer=False,
+            extra={"session_id": "train-1", "metadata": {"owner": "test"}},
+        ),
+    )
+    rest = RestClient(config=RuntimeConfig(checkpoint_root=str(tmp_path)))
+
+    checkpoints = rest.list_checkpoints("train-1").result().checkpoints
+    run = rest.get_training_run("train-1").result()
+    published = rest.publish_checkpoint_from_tinker_path(f"tinker://local/{target}").result()
+
+    assert checkpoints[0].path == str(target)
+    assert run.metadata == {"owner": "test"}
+    assert published.metadata["published"] is True

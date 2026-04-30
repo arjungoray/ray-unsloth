@@ -19,6 +19,10 @@ DEFAULT_LORA_TARGET_MODULES = [
     "down_proj",
 ]
 
+ATTN_LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
+MLP_LORA_TARGET_MODULES = ["gate_proj", "up_proj", "down_proj"]
+UNEMBED_LORA_TARGET_MODULES = ["lm_head"]
+
 
 @dataclass(slots=True)
 class RayConfig:
@@ -108,3 +112,19 @@ def load_config(config: str | Path | RuntimeConfig | dict[str, Any] | None) -> R
     if isinstance(config, (str, Path)):
         return RuntimeConfig.from_file(config)
     return RuntimeConfig.from_dict(config)
+
+
+def lora_target_modules_for_flags(
+    *,
+    train_mlp: bool = True,
+    train_attn: bool = True,
+    train_unembed: bool = True,
+) -> list[str]:
+    modules: list[str] = []
+    if train_attn:
+        modules.extend(ATTN_LORA_TARGET_MODULES)
+    if train_mlp:
+        modules.extend(MLP_LORA_TARGET_MODULES)
+    if train_unembed:
+        modules.extend(UNEMBED_LORA_TARGET_MODULES)
+    return modules

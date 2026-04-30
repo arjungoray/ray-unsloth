@@ -29,8 +29,8 @@ fine-tuning step, save adapter weights, and sample from a new sampler actor:
 ```python
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
 
-service = ServiceClient("configs/example.yaml")
-training = service.create_lora_training_client()
+service = ServiceClient(config="configs/example.yaml")
+training = service.create_lora_training_client(user_metadata={"example": "quickstart"})
 
 tokenizer = training.get_tokenizer().result()
 encoded = tokenizer("Explain gradient accumulation.", add_special_tokens=True)
@@ -72,8 +72,8 @@ python examples/sft_loop.py
 
 ## Current Features
 
-- Tinker-style public clients: `ServiceClient`, `TrainingClient`, and
-  `SamplingClient`.
+- Tinker-style public clients: `ServiceClient`, `TrainingClient`,
+  `SamplingClient`, and a small local `RestClient` for checkpoint inspection.
 - Ray-backed trainer and sampler actors with configurable CPU/GPU resources,
   namespaces, placement strategy, and sampler replica count.
 - Modal-backed GPU execution for resource-efficient smoke tests while keeping
@@ -81,16 +81,22 @@ python examples/sft_loop.py
 - Unsloth model loading with LoRA configuration, 4-bit loading, dtype,
   sequence length, target modules, RS-LoRA toggle, and fast inference settings
   driven by YAML or dictionaries.
-- Training primitives for `forward`, `forward_backward`, custom backward losses,
-  AdamW optimizer steps, gradient clipping, and token logprob computation.
+- Training primitives for `forward`, `forward_backward`, async aliases, custom
+  backward losses, AdamW optimizer steps, gradient clipping, and token logprob
+  computation.
 - Sampling primitives for text generation, multiple return sequences, top-p,
-  top-k, temperature, max token, and seed parameters.
-- Adapter checkpoint helpers with atomic directory publishing and manifests for
-  training state, optional optimizer state, and sampler-ready weights.
-- Client construction from fresh config, saved training state, saved training
-  state with optimizer, or exported sampler weights.
+  top-k, temperature, max token, seed, stop sequence, generated-token logprob,
+  prompt logprob, and top-k prompt logprob parameters.
+- Adapter checkpoint helpers with atomic directory publishing, `local://` and
+  initial `tinker://local/...` path handling, and manifests for training state,
+  optional optimizer state, sampler-ready weights, metadata, and local publish
+  status.
+- Client construction from fresh config, Tinker-style method signatures, saved
+  training state, saved training state with optimizer, or exported sampler
+  weights.
 - Lightweight dataclass request and response types that are pickle-friendly for
-  Ray and easy to inspect in tests.
+  Ray, include Tinker-compatible aliases for common fields, and are easy to
+  inspect in tests.
 - Basic unit coverage for public client futures, sampling round-robin behavior,
   runtime config parsing, checkpoint manifests, and public data types.
 
@@ -102,8 +108,8 @@ python examples/sft_loop.py
   policy optimization while keeping the low-level primitives available.
 - Stronger multi-actor orchestration, including multiple trainers, coordinated
   sampler pools, and clearer lifecycle management for Ray sessions.
-- More complete checkpoint backends, such as cloud/object-store paths,
-  resumable runs, checkpoint discovery, and retention policies.
+- More complete checkpoint backends, such as cloud/object-store paths, checkpoint
+  discovery beyond the local manifest index, and retention policies.
 - Richer model and tokenizer IO, including chat-template helpers, prompt/text
   convenience APIs, and safer validation around tokenized inputs.
 - Expanded observability for training and sampling metrics, actor health,

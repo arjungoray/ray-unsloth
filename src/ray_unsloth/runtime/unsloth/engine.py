@@ -30,6 +30,7 @@ from ray_unsloth.types import (
     SampleResponse,
     SamplingParams,
     SaveWeightsForSamplerResponse,
+    TensorData,
     TrainingClientInfo,
 )
 
@@ -59,11 +60,13 @@ class UnslothEngine:
         checkpoint_root: str,
         model_path: str | None = None,
         with_optimizer: bool = False,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.model_config = model_config
         self.lora_config = lora_config
         self.checkpoint_root = checkpoint_root
+        self.metadata = dict(metadata or {})
         self.step = 0
         self.optimizer = None
         self._custom_losses: dict[str, CustomLoss] = {}
@@ -111,6 +114,7 @@ class UnslothEngine:
             metadata={
                 "max_seq_length": self.model_config.max_seq_length,
                 "dtype": self.model_config.dtype,
+                **self.metadata,
             },
         )
 
@@ -158,11 +162,20 @@ class UnslothEngine:
             if raw is None:
                 labels.append(input_row.detach().clone())
             else:
-                row = list(raw)
+                row = self._loss_tokens(raw)
                 if len(row) < input_ids.shape[1]:
                     row = row + [-100] * (input_ids.shape[1] - len(row))
                 labels.append(torch.tensor(row[: input_ids.shape[1]], dtype=torch.long, device=input_ids.device))
         return torch.stack(labels)
+
+    def _loss_tokens(self, raw: Any) -> list[int]:
+        if isinstance(raw, ModelInput):
+            return raw.to_ints()
+        if isinstance(raw, TensorData):
+            raw = raw.data
+        if hasattr(raw, "tolist"):
+            raw = raw.tolist()
+        return list(raw)
 
     def _cross_entropy_loss(self, data: list[Datum]):
         batch = self._batch_from_data(data)
@@ -265,6 +278,8 @@ class UnslothEngine:
         prompt: ModelInput | list[int],
         num_samples: int = 1,
         sampling_params: SamplingParams | None = None,
+        include_prompt_logprobs: bool = False,
+        topk_prompt_logprobs: int = 0,
     ) -> SampleResponse:
         import torch
         from unsloth import FastLanguageModel
@@ -273,6 +288,7 @@ class UnslothEngine:
         sampling_params = sampling_params or SamplingParams()
         prompt_tokens = prompt.to_ints() if isinstance(prompt, ModelInput) else list(prompt)
         input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self.model.device)
+        stop_token_ids = self._stop_token_ids(sampling_params.stop)
         do_sample = sampling_params.temperature > 0
         generation_kwargs = {
             "max_new_tokens": sampling_params.max_tokens,
@@ -281,22 +297,142 @@ class UnslothEngine:
             "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
             "remove_invalid_values": True,
             "renormalize_logits": True,
+            "return_dict_in_generate": True,
+            "output_scores": True,
         }
+        if stop_token_ids:
+            from transformers import StoppingCriteria, StoppingCriteriaList
+
+            class StopOnTokenSequences(StoppingCriteria):
+                def __init__(self, stop_sequences: list[list[int]], prompt_length: int):
+                    self.stop_sequences = stop_sequences
+                    self.prompt_length = prompt_length
+
+                def __call__(self, input_ids, scores, **kwargs) -> bool:
+                    del scores, kwargs
+                    if input_ids.shape[1] <= self.prompt_length:
+                        return False
+                    for row in input_ids:
+                        generated = row[self.prompt_length :].tolist()
+                        if not any(
+                            len(generated) >= len(stop) and generated[-len(stop) :] == stop
+                            for stop in self.stop_sequences
+                        ):
+                            return False
+                    return True
+
+            generation_kwargs["stopping_criteria"] = StoppingCriteriaList(
+                [StopOnTokenSequences(stop_token_ids, len(prompt_tokens))]
+            )
         if do_sample:
             generation_kwargs["temperature"] = sampling_params.temperature
             generation_kwargs["top_p"] = sampling_params.top_p
-        if do_sample and sampling_params.top_k is not None:
+        if do_sample and sampling_params.top_k is not None and sampling_params.top_k > 0:
             generation_kwargs["top_k"] = sampling_params.top_k
         if sampling_params.seed is not None:
             torch.manual_seed(sampling_params.seed)
         with torch.no_grad():
             outputs = self.model.generate(input_ids=input_ids, **generation_kwargs)
+        generated_logprobs = self._generated_logprobs(outputs)
         sequences = []
-        for output in outputs:
+        for index, output in enumerate(outputs.sequences):
             tokens = output.detach().cpu().tolist()
-            text = self.tokenizer.decode(tokens[len(prompt_tokens) :], skip_special_tokens=True)
-            sequences.append(GeneratedSequence(tokens=tokens, text=text))
-        return SampleResponse(sequences=sequences)
+            completion_tokens = tokens[len(prompt_tokens) :]
+            completion_tokens, finish_reason = self._trim_stop_tokens(completion_tokens, stop_token_ids)
+            if finish_reason != "stop":
+                finish_reason = self._finish_reason(completion_tokens, sampling_params.max_tokens)
+            text = self.tokenizer.decode(completion_tokens, skip_special_tokens=True)
+            sequence_logprobs = generated_logprobs[index][: len(completion_tokens)] if generated_logprobs else None
+            sequences.append(
+                GeneratedSequence(
+                    tokens=completion_tokens,
+                    text=text,
+                    logprobs=sequence_logprobs,
+                    finish_reason=finish_reason,
+                    stop_reason=finish_reason,
+                )
+            )
+        prompt_logprobs, topk = self._prompt_logprobs(
+            prompt_tokens,
+            include_prompt_logprobs=include_prompt_logprobs,
+            topk_prompt_logprobs=topk_prompt_logprobs,
+        )
+        return SampleResponse(
+            sequences=sequences,
+            prompt_logprobs=prompt_logprobs,
+            topk_prompt_logprobs=topk,
+        )
+
+    def _stop_token_ids(self, stops: list[str]) -> list[list[int]]:
+        tokenized = []
+        for stop in stops:
+            tokens = self.tokenizer.encode(stop, add_special_tokens=False)
+            if tokens:
+                tokenized.append(tokens)
+        return tokenized
+
+    def _trim_stop_tokens(self, tokens: list[int], stop_token_ids: list[list[int]]) -> tuple[list[int], str | None]:
+        for stop in stop_token_ids:
+            if len(tokens) >= len(stop) and tokens[-len(stop) :] == stop:
+                return tokens[: -len(stop)], "stop"
+        return tokens, None
+
+    def _finish_reason(self, tokens: list[int], max_tokens: int) -> str:
+        eos_token_id = self.tokenizer.eos_token_id
+        if tokens and eos_token_id is not None and tokens[-1] == eos_token_id:
+            return "eos"
+        if len(tokens) >= max_tokens:
+            return "length"
+        return "stop"
+
+    def _generated_logprobs(self, outputs) -> list[list[float | None]] | None:
+        import torch
+
+        scores = getattr(outputs, "scores", None)
+        sequences = getattr(outputs, "sequences", None)
+        if not scores or sequences is None:
+            return None
+        prompt_length = sequences.shape[1] - len(scores)
+        all_logprobs: list[list[float | None]] = [[] for _ in range(sequences.shape[0])]
+        for step, score in enumerate(scores):
+            log_probs = score.log_softmax(dim=-1)
+            token_ids = sequences[:, prompt_length + step]
+            gathered = torch.gather(log_probs, dim=-1, index=token_ids.unsqueeze(-1)).squeeze(-1)
+            for row_index, value in enumerate(gathered.detach().cpu()):
+                all_logprobs[row_index].append(float(value))
+        return all_logprobs
+
+    def _prompt_logprobs(
+        self,
+        prompt_tokens: list[int],
+        *,
+        include_prompt_logprobs: bool,
+        topk_prompt_logprobs: int,
+    ) -> tuple[list[float | None] | None, list[list[tuple[int, float]]] | None]:
+        import torch
+
+        if not include_prompt_logprobs and topk_prompt_logprobs <= 0:
+            return None, None
+        if len(prompt_tokens) < 2:
+            empty_logprobs = [None] * len(prompt_tokens) if include_prompt_logprobs else None
+            empty_topk = [[] for _ in prompt_tokens] if topk_prompt_logprobs > 0 else None
+            return empty_logprobs, empty_topk
+        input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self.model.device)
+        with torch.no_grad():
+            outputs = self.model(input_ids=input_ids)
+            log_probs = outputs.logits[:, :-1, :].log_softmax(dim=-1).squeeze(0)
+        prompt_logprobs = None
+        if include_prompt_logprobs:
+            next_tokens = input_ids[:, 1:].squeeze(0)
+            gathered = torch.gather(log_probs, dim=-1, index=next_tokens.unsqueeze(-1)).squeeze(-1)
+            prompt_logprobs = [None] + [float(value) for value in gathered.detach().cpu()]
+        topk = None
+        if topk_prompt_logprobs > 0:
+            values, indices = torch.topk(log_probs, k=topk_prompt_logprobs, dim=-1)
+            topk = [[]]
+            for row_values, row_indices in zip(values.detach().cpu(), indices.detach().cpu()):
+                topk.append([(int(token_id), float(value)) for token_id, value in zip(row_indices, row_values)])
+        return prompt_logprobs, topk
 
     def _save_weights(self, target: Path, *, include_optimizer: bool, kind: str) -> CheckpointRef:
         import torch
@@ -313,6 +449,11 @@ class UnslothEngine:
                 base_model=self.model_config.base_model,
                 lora=asdict(self.lora_config),
                 has_optimizer=include_optimizer,
+                extra={
+                    "session_id": self.session_id,
+                    "model_path": str(target),
+                    "metadata": self.metadata,
+                },
             )
             write_manifest(tmp_dir, manifest)
         return checkpoint_ref(target, has_optimizer=include_optimizer)

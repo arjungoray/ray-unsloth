@@ -9,8 +9,8 @@ from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceCl
 
 
 def main() -> None:
-    service = ServiceClient("configs/example.yaml")
-    training = service.create_lora_training_client()
+    service = ServiceClient(config="configs/example.yaml")
+    training = service.create_lora_training_client(user_metadata={"example": "sft_loop"})
     tokenizer = training.get_tokenizer().result()
 
     prompt = "Write a one sentence definition of gradient accumulation."

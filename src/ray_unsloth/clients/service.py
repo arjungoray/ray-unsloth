@@ -6,7 +6,7 @@ from typing import Any
 
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.training import TrainingClient
-from ray_unsloth.config import RuntimeConfig, load_config
+from ray_unsloth.config import RuntimeConfig, load_config, lora_target_modules_for_flags
 from ray_unsloth.runtime.modal import ModalSession
 from ray_unsloth.runtime.ray import RaySession
 from ray_unsloth.types import GetServerCapabilitiesResponse
@@ -15,9 +15,28 @@ from ray_unsloth.types import GetServerCapabilitiesResponse
 class ServiceClient:
     """Main control-plane handle, matching Tinker's client-construction layer."""
 
-    def __init__(self, config: str | RuntimeConfig | dict[str, Any] | None = None):
+    def __init__(
+        self,
+        user_metadata: dict[str, str] | str | RuntimeConfig | dict[str, Any] | None = None,
+        project_id: str | None = None,
+        config: str | RuntimeConfig | dict[str, Any] | None = None,
+    ):
+        if config is None and self._looks_like_config(user_metadata):
+            config = user_metadata
+            user_metadata = None
+        self.user_metadata = dict(user_metadata or {}) if isinstance(user_metadata, dict) else {}
+        self.project_id = project_id
         self.config = load_config(config)
         self._session = ModalSession(self.config) if self.config.modal.enabled else RaySession(self.config)
+
+    @staticmethod
+    def _looks_like_config(value: Any) -> bool:
+        if isinstance(value, (str, RuntimeConfig)):
+            return True
+        if not isinstance(value, dict):
+            return False
+        config_keys = {"ray", "model", "lora", "resources", "modal", "checkpoint_root", "supported_models"}
+        return any(key in value for key in config_keys)
 
     def get_server_capabilities(self) -> GetServerCapabilitiesResponse:
         supported = self.config.supported_models or [self.config.model.base_model]
@@ -32,33 +51,48 @@ class ServiceClient:
             },
         )
 
+    def get_server_capabilities_async(self) -> GetServerCapabilitiesResponse:
+        return self.get_server_capabilities()
+
     def create_lora_training_client(
         self,
-        *,
         base_model: str | None = None,
         rank: int | None = None,
+        seed: int | None = None,
+        train_mlp: bool = True,
+        train_attn: bool = True,
+        train_unembed: bool = True,
+        user_metadata: dict[str, str] | None = None,
         metadata: dict[str, Any] | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> TrainingClient:
-        # Accept extra Tinker-style keyword fields that are represented by config
-        # in this MVP, while keeping the call source-compatible.
         del kwargs
+        run_metadata = self._merged_metadata(metadata, user_metadata)
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
-            metadata=metadata,
+            seed=seed,
+            target_modules=lora_target_modules_for_flags(
+                train_mlp=train_mlp,
+                train_attn=train_attn,
+                train_unembed=train_unembed,
+            ),
+            metadata=run_metadata,
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self)
 
+    def create_lora_training_client_async(self, *args, **kwargs) -> TrainingClient:
+        return self.create_lora_training_client(*args, **kwargs)
+
     def create_sampling_client(
         self,
-        *,
-        base_model: str | None = None,
         model_path: str | None = None,
+        base_model: str | None = None,
+        retry_config: Any | None = None,
         replicas: int | None = None,
         **kwargs,
     ) -> SamplingClient:
-        del kwargs
+        del retry_config, kwargs
         session_id, actors = self._session.create_sampler_actors(
             base_model=base_model,
             model_path=model_path,
@@ -66,26 +100,69 @@ class ServiceClient:
         )
         return SamplingClient(session_id=session_id, actors=actors)
 
-    def create_training_client_from_state(self, path: str, **kwargs) -> TrainingClient:
+    def create_sampling_client_async(self, *args, **kwargs) -> SamplingClient:
+        return self.create_sampling_client(*args, **kwargs)
+
+    def create_training_client_from_state(
+        self,
+        path: str,
+        user_metadata: dict[str, str] | None = None,
+        **kwargs,
+    ) -> TrainingClient:
         base_model = kwargs.pop("base_model", None)
         rank = kwargs.pop("rank", None)
+        metadata = kwargs.pop("metadata", None)
         del kwargs
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             model_path=path,
             with_optimizer=False,
+            metadata=self._merged_metadata(metadata, user_metadata),
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self)
 
-    def create_training_client_from_state_with_optimizer(self, path: str, **kwargs) -> TrainingClient:
+    def create_training_client_from_state_async(self, *args, **kwargs) -> TrainingClient:
+        return self.create_training_client_from_state(*args, **kwargs)
+
+    def create_training_client_from_state_with_optimizer(
+        self,
+        path: str,
+        user_metadata: dict[str, str] | None = None,
+        **kwargs,
+    ) -> TrainingClient:
         base_model = kwargs.pop("base_model", None)
         rank = kwargs.pop("rank", None)
+        metadata = kwargs.pop("metadata", None)
         del kwargs
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             model_path=path,
             with_optimizer=True,
+            metadata=self._merged_metadata(metadata, user_metadata),
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self)
+
+    def create_training_client_from_state_with_optimizer_async(self, *args, **kwargs) -> TrainingClient:
+        return self.create_training_client_from_state_with_optimizer(*args, **kwargs)
+
+    def create_rest_client(self):
+        from ray_unsloth.clients.rest import RestClient
+
+        return RestClient(config=self.config)
+
+    def _merged_metadata(
+        self,
+        metadata: dict[str, Any] | None = None,
+        user_metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
+        if self.project_id is not None:
+            merged["project_id"] = self.project_id
+        merged.update(self.user_metadata)
+        if metadata:
+            merged.update(metadata)
+        if user_metadata:
+            merged.update(user_metadata)
+        return merged

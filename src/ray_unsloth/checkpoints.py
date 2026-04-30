@@ -21,6 +21,12 @@ def resolve_path(uri: str | Path) -> Path:
     raw = str(uri)
     if raw.startswith("local://"):
         raw = raw.removeprefix("local://")
+    elif raw.startswith("tinker://local/"):
+        raw = raw.removeprefix("tinker://local/")
+        if not raw.startswith("/"):
+            raw = f"/{raw}"
+    elif raw.startswith("tinker://"):
+        raw = str(Path("checkpoints") / "tinker" / raw.removeprefix("tinker://"))
     return Path(raw).expanduser().resolve()
 
 

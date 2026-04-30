@@ -225,19 +225,21 @@ class ModalSession:
         *,
         base_model: str | None = None,
         lora_rank: int | None = None,
+        seed: int | None = None,
+        target_modules: list[str] | None = None,
         model_path: str | None = None,
         with_optimizer: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> tuple[str, Any]:
-        del metadata
         session_id = f"train-{uuid.uuid4().hex}"
         init_kwargs = {
             "session_id": session_id,
             "model_config": self._model_config(base_model),
-            "lora_config": self._lora_config(lora_rank),
+            "lora_config": self._lora_config(lora_rank, seed=seed, target_modules=target_modules),
             "checkpoint_root": self.config.checkpoint_root,
             "model_path": model_path,
             "with_optimizer": with_optimizer,
+            "metadata": metadata or {},
             "volume_name": self.config.modal.volume_name,
             "volume_mount_path": self.config.modal.volume_mount_path,
         }
@@ -286,7 +288,20 @@ class ModalSession:
             return self.config.model
         return replace(self.config.model, base_model=base_model)
 
-    def _lora_config(self, rank: int | None) -> LoRAConfig:
-        if rank is None:
+    def _lora_config(
+        self,
+        rank: int | None,
+        *,
+        seed: int | None = None,
+        target_modules: list[str] | None = None,
+    ) -> LoRAConfig:
+        updates: dict[str, Any] = {}
+        if rank is not None:
+            updates["rank"] = rank
+        if seed is not None:
+            updates["random_state"] = seed
+        if target_modules is not None:
+            updates["target_modules"] = target_modules
+        if not updates:
             return self.config.lora
-        return replace(self.config.lora, rank=rank)
+        return replace(self.config.lora, **updates)

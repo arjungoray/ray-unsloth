@@ -1,7 +1,9 @@
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from ray_unsloth import GeneratedSequence, ModelInput, SampleResponse
 
 
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "overfit_smoke_test.py"
@@ -13,6 +15,7 @@ SPEC.loader.exec_module(overfit_smoke_test)
 
 build_sft_datum = overfit_smoke_test.build_sft_datum
 assert_meaningful_generation = overfit_smoke_test.assert_meaningful_generation
+assert_sampling_features = overfit_smoke_test.assert_sampling_features
 
 
 class FakeTokenizer:
@@ -47,3 +50,77 @@ def test_assert_meaningful_generation_accepts_canary_answer():
         "The ray-unsloth smoke test answer is blue maple.",
         " blue maple.",
     )
+
+
+def test_assert_sampling_features_accepts_new_sampling_fields():
+    prompt = ModelInput.from_ints([1, 2, 3])
+    response = SampleResponse(
+        sequences=[
+            GeneratedSequence(
+                tokens=[4, 5],
+                text="ok",
+                logprobs=[-0.1, -0.2],
+                stop_reason="length",
+            )
+        ],
+        prompt_logprobs=[None, -0.4, -0.5],
+        topk_prompt_logprobs=[[], [(2, -0.4)], [(3, -0.5)]],
+    )
+
+    assert_sampling_features(response, prompt, max_tokens=2)
+
+
+def test_assert_sampling_features_rejects_missing_prompt_logprobs():
+    prompt = ModelInput.from_ints([1])
+    response = SampleResponse(
+        sequences=[GeneratedSequence(tokens=[2], logprobs=[-0.1], stop_reason="length")],
+        topk_prompt_logprobs=[[]],
+    )
+
+    with pytest.raises(AssertionError, match="prompt_logprobs"):
+        assert_sampling_features(response, prompt, max_tokens=1)
+
+
+def test_sample_with_feature_checks_requests_new_sampling_features():
+    calls = []
+
+    class FakeSampler:
+        def sample(
+            self,
+            prompt_input,
+            num_samples=1,
+            sampling_params=None,
+            include_prompt_logprobs=False,
+            topk_prompt_logprobs=0,
+        ):
+            calls.append(
+                {
+                    "prompt_input": prompt_input,
+                    "num_samples": num_samples,
+                    "sampling_params": sampling_params,
+                    "include_prompt_logprobs": include_prompt_logprobs,
+                    "topk_prompt_logprobs": topk_prompt_logprobs,
+                }
+            )
+            return SimpleNamespace(
+                result=lambda: SampleResponse(
+                    sequences=[
+                        GeneratedSequence(
+                            tokens=[4],
+                            text="ok",
+                            logprobs=[-0.1],
+                            stop_reason="stop",
+                        )
+                    ],
+                    prompt_logprobs=[None, -0.2],
+                    topk_prompt_logprobs=[[], [(4, -0.2)]],
+                )
+            )
+
+    prompt = ModelInput.from_ints([1, 2])
+    response = overfit_smoke_test.sample_with_feature_checks(FakeSampler(), prompt, max_tokens=3)
+
+    assert response.sequences[0].tokens == [4]
+    assert calls[0]["include_prompt_logprobs"] is True
+    assert calls[0]["topk_prompt_logprobs"] == 3
+    assert calls[0]["sampling_params"].stop == ["."]

@@ -67,6 +67,48 @@ def sample_text(sampler, prompt_input: ModelInput, max_tokens: int) -> str:
     return response.sequences[0].text or ""
 
 
+def assert_sampling_features(response, prompt_input: ModelInput, max_tokens: int) -> None:
+    if response.prompt_logprobs is None:
+        raise AssertionError("sample response did not include prompt_logprobs")
+    if len(response.prompt_logprobs) != prompt_input.length:
+        raise AssertionError(
+            f"prompt_logprobs length {len(response.prompt_logprobs)} did not match "
+            f"prompt length {prompt_input.length}"
+        )
+    if response.topk_prompt_logprobs is None:
+        raise AssertionError("sample response did not include topk_prompt_logprobs")
+    if len(response.topk_prompt_logprobs) != prompt_input.length:
+        raise AssertionError(
+            f"topk_prompt_logprobs length {len(response.topk_prompt_logprobs)} did not match "
+            f"prompt length {prompt_input.length}"
+        )
+
+    sequence = response.sequences[0]
+    if len(sequence.tokens) > max_tokens:
+        raise AssertionError(f"sample returned {len(sequence.tokens)} generated tokens, expected <= {max_tokens}")
+    if sequence.logprobs is None:
+        raise AssertionError("sampled sequence did not include generated-token logprobs")
+    if len(sequence.logprobs) != len(sequence.tokens):
+        raise AssertionError("generated-token logprobs length did not match generated token length")
+    if sequence.stop_reason is None and sequence.finish_reason is None:
+        raise AssertionError("sampled sequence did not include a stop or finish reason")
+    prompt_tokens = prompt_input.to_ints()
+    if len(sequence.tokens) >= len(prompt_tokens) and sequence.tokens[: len(prompt_tokens)] == prompt_tokens:
+        raise AssertionError("sampled sequence tokens included the prompt; expected generated tokens only")
+
+
+def sample_with_feature_checks(sampler, prompt_input: ModelInput, max_tokens: int):
+    response = sampler.sample(
+        prompt_input,
+        num_samples=1,
+        sampling_params=SamplingParams(max_tokens=max_tokens, temperature=0.0, stop=["."]),
+        include_prompt_logprobs=True,
+        topk_prompt_logprobs=3,
+    ).result()
+    assert_sampling_features(response, prompt_input, max_tokens)
+    return response
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/example.yaml")
@@ -76,8 +118,8 @@ def main() -> None:
     parser.add_argument("--target", default=DEFAULT_TARGET)
     args = parser.parse_args()
 
-    service = ServiceClient(args.config)
-    training = service.create_lora_training_client()
+    service = ServiceClient(config=args.config)
+    training = service.create_lora_training_client(user_metadata={"example": "overfit_smoke_test"})
     tokenizer = training.get_tokenizer().result()
     datum, prompt_input, target_token_count = build_sft_datum(tokenizer, args.prompt, args.target)
 
@@ -98,6 +140,19 @@ def main() -> None:
 
     assert_meaningful_generation(generated, args.target)
     print("PASS: generated text contains the trained canary answer.")
+
+    feature_response = sample_with_feature_checks(
+        sampler,
+        prompt_input,
+        max_tokens=target_token_count + 8,
+    )
+    print(
+        "PASS: sampling features returned "
+        f"prompt_logprobs={len(feature_response.prompt_logprobs or [])}, "
+        f"topk_prompt_logprobs={len(feature_response.topk_prompt_logprobs or [])}, "
+        f"generated_logprobs={len(feature_response.sequences[0].logprobs or [])}, "
+        f"stop_reason={feature_response.sequences[0].stop_reason!r}."
+    )
 
 
 if __name__ == "__main__":

@@ -34,6 +34,12 @@ class RayObjectFuture(Generic[T]):
     def get(self, timeout: float | None = None) -> T:
         return self.result(timeout=timeout)
 
+    def __await__(self):
+        async def _resolve():
+            return self.result()
+
+        return _resolve().__await__()
+
 
 class ImmediateFuture(Generic[T]):
     """Future wrapper for synchronous local values."""
@@ -47,6 +53,12 @@ class ImmediateFuture(Generic[T]):
 
     def get(self, timeout: float | None = None) -> T:
         return self.result(timeout=timeout)
+
+    def __await__(self):
+        async def _resolve():
+            return self.result()
+
+        return _resolve().__await__()
 
 
 def future_from(value: Any) -> RayObjectFuture[Any] | ImmediateFuture[Any]:
@@ -67,8 +79,55 @@ class ModelInput:
     def from_ints(cls, tokens: Iterable[int]) -> "ModelInput":
         return cls(tokens=list(tokens))
 
+    @classmethod
+    def empty(cls) -> "ModelInput":
+        return cls(tokens=[])
+
     def to_ints(self) -> list[int]:
         return list(self.tokens)
+
+    @property
+    def length(self) -> int:
+        return len(self.tokens)
+
+    def append(self, chunk: "ModelInput | Iterable[int] | int") -> "ModelInput":
+        if isinstance(chunk, ModelInput):
+            return ModelInput(self.tokens + chunk.to_ints())
+        if isinstance(chunk, int):
+            return self.append_int(chunk)
+        return ModelInput(self.tokens + list(chunk))
+
+    def append_int(self, token: int) -> "ModelInput":
+        return ModelInput(self.tokens + [token])
+
+
+@dataclass(slots=True)
+class TensorData:
+    """Small serializable tensor container compatible with Tinker-style Datum inputs."""
+
+    data: Any
+    dtype: str
+    shape: list[int]
+
+
+def _convert_tensor_data(value: Any) -> Any:
+    if isinstance(value, TensorData):
+        return value
+    if isinstance(value, ModelInput):
+        return value
+    detach = getattr(value, "detach", None)
+    if callable(detach):
+        tensor = detach().cpu()
+        return TensorData(data=tensor.tolist(), dtype=str(tensor.dtype).removeprefix("torch."), shape=list(tensor.shape))
+    if hasattr(value, "tolist") and hasattr(value, "shape") and hasattr(value, "dtype"):
+        return TensorData(data=value.tolist(), dtype=str(value.dtype), shape=list(value.shape))
+    if isinstance(value, dict):
+        return {key: _convert_tensor_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_convert_tensor_data(item) for item in value]
+    if isinstance(value, tuple):
+        return [_convert_tensor_data(item) for item in value]
+    return value
 
 
 @dataclass(slots=True)
@@ -84,6 +143,9 @@ class Datum:
     loss_fn_inputs: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.loss_fn_inputs = _convert_tensor_data(self.loss_fn_inputs)
+
 
 @dataclass(slots=True)
 class SamplingParams:
@@ -95,13 +157,47 @@ class SamplingParams:
     seed: int | None = None
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class AdamParams:
     learning_rate: float
-    betas: tuple[float, float] = (0.9, 0.999)
-    eps: float = 1e-8
-    weight_decay: float = 0.0
-    max_grad_norm: float | None = None
+    betas: tuple[float, float]
+    eps: float
+    weight_decay: float
+    max_grad_norm: float | None
+
+    def __init__(
+        self,
+        learning_rate: float,
+        betas: tuple[float, float] | None = None,
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        max_grad_norm: float | None = None,
+        *,
+        beta1: float | None = None,
+        beta2: float | None = None,
+        grad_clip_norm: float | None = None,
+    ) -> None:
+        if betas is None:
+            betas = (0.9 if beta1 is None else beta1, 0.999 if beta2 is None else beta2)
+        if grad_clip_norm is not None:
+            max_grad_norm = None if grad_clip_norm == 0.0 else grad_clip_norm
+        self.learning_rate = learning_rate
+        self.betas = betas
+        self.eps = eps
+        self.weight_decay = weight_decay
+        self.max_grad_norm = max_grad_norm
+
+    @property
+    def beta1(self) -> float:
+        return self.betas[0]
+
+    @property
+    def beta2(self) -> float:
+        return self.betas[1]
+
+    @property
+    def grad_clip_norm(self) -> float:
+        return 0.0 if self.max_grad_norm is None else self.max_grad_norm
 
 
 @dataclass(slots=True)
@@ -110,11 +206,24 @@ class GeneratedSequence:
     text: str | None = None
     logprobs: list[float | None] | None = None
     finish_reason: str | None = None
+    stop_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.finish_reason is None and self.stop_reason is not None:
+            self.finish_reason = self.stop_reason
+        if self.stop_reason is None and self.finish_reason is not None:
+            self.stop_reason = self.finish_reason
+
+
+SampledSequence = GeneratedSequence
 
 
 @dataclass(slots=True)
 class SampleResponse:
     sequences: list[GeneratedSequence]
+    type: str = "sample"
+    prompt_logprobs: list[float | None] | None = None
+    topk_prompt_logprobs: list[list[tuple[int, float]]] | None = None
 
 
 @dataclass(slots=True)
@@ -142,6 +251,41 @@ class CheckpointRef:
     step: int | None = None
     has_optimizer: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class Checkpoint:
+    path: str
+    step: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    type: str = "checkpoint"
+
+
+@dataclass(slots=True)
+class TrainingRun:
+    id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    checkpoints: list[Checkpoint] = field(default_factory=list)
+    type: str = "training_run"
+
+
+@dataclass(slots=True)
+class CheckpointsListResponse:
+    checkpoints: list[Checkpoint]
+    type: str = "checkpoints_list"
+
+
+@dataclass(slots=True)
+class TrainingRunsResponse:
+    training_runs: list[TrainingRun]
+    type: str = "training_runs"
+
+
+@dataclass(slots=True)
+class WeightsInfoResponse:
+    path: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    type: str = "weights_info"
 
 
 @dataclass(slots=True)
