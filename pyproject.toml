@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ray-unsloth"
+version = "0.1.0"
+description = "Tinker-compatible primitives backed by Ray orchestration and Unsloth GPU actors."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+  "ray>=2.42.0",
+  "pyyaml>=6.0.0",
+  "torch>=2.2.0",
+  "transformers>=4.44.0",
+  "bitsandbytes>=0.43.0",
+]
+
+[project.optional-dependencies]
+unsloth = [
+  "unsloth",
+  "unsloth-zoo",
+  "vllm",
+]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

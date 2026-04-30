@@ -1,0 +1,40 @@
+ray:
+  address: null
+  namespace: ray-unsloth
+  ignore_reinit_error: true
+
+model:
+  base_model: unsloth/Qwen2.5-7B-Instruct-bnb-4bit
+  max_seq_length: 2048
+  dtype: bfloat16
+  load_in_4bit: true
+  fast_inference: false
+  gpu_memory_utilization: 0.8
+  trust_remote_code: true
+
+lora:
+  rank: 32
+  alpha: 16
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  random_state: 3407
+  use_rslora: false
+
+resources:
+  trainer_num_gpus: 1.0
+  trainer_num_cpus: 1.0
+  sampler_num_gpus: 1.0
+  sampler_num_cpus: 1.0
+  sampler_replicas: 1
+  placement_strategy: PACK
+
+checkpoint_root: checkpoints
+supported_models:
+  - unsloth/Qwen2.5-7B-Instruct-bnb-4bit
