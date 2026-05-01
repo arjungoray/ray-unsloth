@@ -155,17 +155,30 @@ class ModalSession:
         modal_config = self.config.modal
         app = modal.App(modal_config.app_name)
         packages = [
-            "ray>=2.55.1",
-            "pyyaml>=6.0.3",
-            "torch>=2.10.0,<2.11.0",
-            "transformers>=5.5.0,<5.5.1",
-            "bitsandbytes>=0.49.2",
-            "unsloth>=2026.4.8",
-            "unsloth-zoo>=2026.4.9",
+            "accelerate==1.13.0",
+            "bitsandbytes==0.49.2",
+            "hf-transfer==0.1.9",
+            "huggingface_hub==1.13.0",
+            "peft==0.19.1",
+            "ray==2.55.1",
+            "pyyaml==6.0.3",
+            "torchvision==0.25.0",
+            "transformers==5.5.0",
+            "trl==0.24.0",
+            "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git@265d16e742a33e956a7176d5ba309e7691e0da87",
+            "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo.git@d5874e8b6a1f8232549f7c20d1b46dc303485ca6",
+            "xformers==0.0.35",
         ]
-        if self.config.model.fast_inference:
+        if self.config.model.fast_inference or any(
+            config.model.fast_inference for config in self.config.model_configs.values()
+        ):
             packages.append("vllm>=0.20.0")
-        image = modal.Image.debian_slim(python_version=modal_config.python_version).pip_install(*packages)
+        image = (
+            modal.Image.debian_slim(python_version=modal_config.python_version)
+            .apt_install("git")
+            .uv_pip_install(*packages)
+            .env({"HF_HOME": "/model_cache", "PYTHONPATH": "/root/ray_unsloth_src"})
+        )
         source_root = Path(__file__).resolve().parents[3]
         package_dir = source_root / "ray_unsloth"
         if hasattr(image, "add_local_dir"):
@@ -175,7 +188,7 @@ class ModalSession:
                 copy=True,
             )
         if hasattr(image, "env"):
-            image = image.env({"PYTHONPATH": "/root/ray_unsloth_src"})
+            image = image.env({"HF_HOME": "/model_cache", "PYTHONPATH": "/root/ray_unsloth_src"})
 
         volume = modal.Volume.from_name(modal_config.volume_name, create_if_missing=True)
         function_kwargs = {
@@ -235,7 +248,12 @@ class ModalSession:
         init_kwargs = {
             "session_id": session_id,
             "model_config": self._model_config(base_model),
-            "lora_config": self._lora_config(lora_rank, seed=seed, target_modules=target_modules),
+            "lora_config": self._lora_config(
+                lora_rank,
+                base_model=base_model,
+                seed=seed,
+                target_modules=target_modules,
+            ),
             "checkpoint_root": self.config.checkpoint_root,
             "model_path": model_path,
             "with_optimizer": with_optimizer,
@@ -266,7 +284,7 @@ class ModalSession:
             init_kwargs = {
                 "session_id": session_id,
                 "model_config": self._model_config(base_model),
-                "lora_config": self._lora_config(None),
+                "lora_config": self._lora_config(None, base_model=base_model),
                 "checkpoint_root": self.config.checkpoint_root,
                 "model_path": model_path,
                 "volume_name": self.config.modal.volume_name,
@@ -284,17 +302,18 @@ class ModalSession:
         return session_id, actors
 
     def _model_config(self, base_model: str | None) -> ModelConfig:
-        if base_model is None:
-            return self.config.model
-        return replace(self.config.model, base_model=base_model)
+        model_config, _lora_config = self.config.resolve_model_configs(base_model)
+        return model_config
 
     def _lora_config(
         self,
         rank: int | None,
         *,
+        base_model: str | None = None,
         seed: int | None = None,
         target_modules: list[str] | None = None,
     ) -> LoRAConfig:
+        _model_config, lora_config = self.config.resolve_model_configs(base_model)
         updates: dict[str, Any] = {}
         if rank is not None:
             updates["rank"] = rank
@@ -303,5 +322,5 @@ class ModalSession:
         if target_modules is not None:
             updates["target_modules"] = target_modules
         if not updates:
-            return self.config.lora
-        return replace(self.config.lora, **updates)
+            return lora_config
+        return replace(lora_config, **updates)

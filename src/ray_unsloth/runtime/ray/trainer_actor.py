@@ -6,7 +6,7 @@ from typing import Any
 
 from ray_unsloth.config import LoRAConfig, ModelConfig
 from ray_unsloth.runtime.unsloth import UnslothEngine
-from ray_unsloth.types import AdamParams, CustomLoss, Datum
+from ray_unsloth.types import AdamParams, CustomLoss, Datum, ModelInput, SamplingParams
 
 
 class TrainerActorImpl:
@@ -42,6 +42,25 @@ class TrainerActorImpl:
 
     def compute_logprobs(self, prompt):
         return self.engine.compute_logprobs(prompt)
+
+    def sample(
+        self,
+        prompt: ModelInput | list[int],
+        num_samples: int = 1,
+        sampling_params: SamplingParams | None = None,
+        include_prompt_logprobs: bool = False,
+        topk_prompt_logprobs: int = 0,
+    ):
+        return self.engine.sample(
+            prompt,
+            num_samples=num_samples,
+            sampling_params=sampling_params,
+            include_prompt_logprobs=include_prompt_logprobs,
+            topk_prompt_logprobs=topk_prompt_logprobs,
+        )
+
+    def get_base_model(self) -> str:
+        return self.engine.model_config.base_model
 
     def forward(self, data: list[Datum], loss_fn: str = "cross_entropy"):
         return self.engine.forward(data, loss_fn=loss_fn)

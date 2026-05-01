@@ -1,62 +1,11 @@
 import sys
 from types import SimpleNamespace
 
+import torch
+
+from ray_unsloth.config import LoRAConfig, ModelConfig
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
 from ray_unsloth.types import ModelInput, SamplingParams
-
-
-class FakeRow:
-    def __init__(self, values):
-        self.values = list(values)
-
-    def detach(self):
-        return self
-
-    def cpu(self):
-        return self
-
-    def tolist(self):
-        return list(self.values)
-
-
-class FakeTensor:
-    def __init__(self, rows):
-        self.rows = [list(row) for row in rows]
-
-    def __getitem__(self, index):
-        if isinstance(index, int):
-            return FakeRow(self.rows[index])
-        row, column = index
-        return self.rows[row][column]
-
-    def __iter__(self):
-        for row in self.rows:
-            yield FakeRow(row)
-
-
-class FakeNoGrad:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-
-class FakeTorch:
-    long = "long"
-
-    @staticmethod
-    def tensor(rows, dtype=None, device=None):
-        del dtype, device
-        return FakeTensor(rows)
-
-    @staticmethod
-    def manual_seed(seed):
-        del seed
-
-    @staticmethod
-    def no_grad():
-        return FakeNoGrad()
 
 
 class FakeTokenizer:
@@ -77,9 +26,18 @@ class FakeTokenizer:
 class FakeModel:
     device = "cpu"
 
-    def generate(self, input_ids, **kwargs):
-        del kwargs
-        return SimpleNamespace(sequences=FakeTensor([[*input_ids[0].tolist(), 11, 12]]), scores=[])
+    def __init__(self):
+        self.forward_input_ids = []
+        self.forward_attention_masks = []
+        self.next_tokens = [11, 12]
+
+    def __call__(self, input_ids, attention_mask=None):
+        self.forward_input_ids.append(input_ids.detach().cpu().tolist())
+        self.forward_attention_masks.append(attention_mask.detach().cpu().tolist())
+        token = self.next_tokens.pop(0)
+        logits = torch.full((1, input_ids.shape[1], 100), -100.0)
+        logits[0, -1, token] = 0.0
+        return SimpleNamespace(logits=logits)
 
 
 class FakeFastLanguageModel:
@@ -88,29 +46,70 @@ class FakeFastLanguageModel:
         del model
 
 
-class FakeStoppingCriteria:
-    pass
+def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp_path):
+    calls = {}
 
+    class LoadingFastLanguageModel:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            calls["from_pretrained"] = kwargs
+            return FakeModel(), FakeTokenizer()
 
-class FakeStoppingCriteriaList(list):
-    pass
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            calls["get_peft_model"] = kwargs
+            return model
+
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
+
+    UnslothEngine(
+        session_id="train-1",
+        model_config=ModelConfig(
+            base_model="LiquidAI/LFM2.5-1.2B-Instruct",
+            max_seq_length=4096,
+            load_in_4bit=False,
+            fast_inference=False,
+            gpu_memory_utilization=0.75,
+            trust_remote_code=False,
+        ),
+        lora_config=LoRAConfig(
+            rank=16,
+            alpha=16,
+            dropout=0.0,
+            target_modules=["q_proj", "k_proj", "v_proj", "out_proj", "in_proj", "w1", "w2", "w3"],
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+            use_rslora=True,
+            loftq_config={"bits": 4},
+        ),
+        checkpoint_root=str(tmp_path),
+    )
+
+    assert calls["from_pretrained"]["model_name"] == "LiquidAI/LFM2.5-1.2B-Instruct"
+    assert calls["from_pretrained"]["max_seq_length"] == 4096
+    assert calls["from_pretrained"]["load_in_4bit"] is False
+    assert calls["from_pretrained"]["fast_inference"] is False
+    assert calls["from_pretrained"]["gpu_memory_utilization"] == 0.75
+    assert calls["from_pretrained"]["trust_remote_code"] is False
+    assert calls["get_peft_model"] == {
+        "r": 16,
+        "target_modules": ["q_proj", "k_proj", "v_proj", "out_proj", "in_proj", "w1", "w2", "w3"],
+        "lora_alpha": 16,
+        "lora_dropout": 0.0,
+        "bias": "none",
+        "use_gradient_checkpointing": "unsloth",
+        "random_state": 3407,
+        "use_rslora": True,
+        "loftq_config": {"bits": 4},
+    }
 
 
 def test_sample_returns_generated_tokens_and_prompt_logprobs(monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
     monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=FakeFastLanguageModel))
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            StoppingCriteria=FakeStoppingCriteria,
-            StoppingCriteriaList=FakeStoppingCriteriaList,
-        ),
-    )
     engine = UnslothEngine.__new__(UnslothEngine)
     engine.model = FakeModel()
     engine.tokenizer = FakeTokenizer()
-    engine._generated_logprobs = lambda outputs: [[-0.1, -0.2]]
     engine._prompt_logprobs = lambda prompt_tokens, **kwargs: ([None, -0.3], [[], [(11, -0.3)]])
 
     response = engine.sample(
@@ -129,3 +128,7 @@ def test_sample_returns_generated_tokens_and_prompt_logprobs(monkeypatch):
     assert len(response.prompt_logprobs) == 2
     assert response.topk_prompt_logprobs is not None
     assert len(response.topk_prompt_logprobs) == 2
+    assert engine.model.forward_input_ids[0] == [[10, 11]]
+    assert engine.model.forward_input_ids[1] == [[10, 11, 11]]
+    assert engine.model.forward_attention_masks[0] == [[1, 1]]
+    assert engine.model.forward_attention_masks[1] == [[1, 1, 1]]

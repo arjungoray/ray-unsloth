@@ -120,6 +120,8 @@ class TrainingClient:
         replicas: int | None = None,
     ) -> SamplingClient:
         saved = resolve(self.save_weights_for_sampler(path))
+        if replicas in (None, 1):
+            return SamplingClient(session_id=f"{self.session_id}-sampler", actors=[self._actor])
         return self._service.create_sampling_client(
             model_path=saved.path,
             retry_config=retry_config,

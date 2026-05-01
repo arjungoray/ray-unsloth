@@ -37,6 +37,17 @@ class FakeTrainerActor:
         checkpoint = CheckpointRef(path="/tmp/sampler", step=1)
         return SaveWeightsForSamplerResponse(path=checkpoint.path, checkpoint=checkpoint)
 
+    def sample(
+        self,
+        prompt,
+        num_samples=1,
+        sampling_params=None,
+        include_prompt_logprobs=False,
+        topk_prompt_logprobs=0,
+    ):
+        del prompt, num_samples, sampling_params, include_prompt_logprobs, topk_prompt_logprobs
+        return SampleResponse(sequences=[GeneratedSequence(tokens=[1, 2], text="trained")])
+
 
 class FakeSamplerActor:
     def __init__(self):
@@ -120,11 +131,22 @@ def test_training_client_async_aliases_and_create_sampling_client():
     assert service.model_path == "/tmp/sampler"
 
 
-def test_save_weights_and_get_sampling_client_uses_service():
+def test_save_weights_and_get_sampling_client_reuses_training_actor():
     service = FakeService()
     client = TrainingClient(session_id="train", actor=FakeTrainerActor(), service=service)
 
     sampler = client.save_weights_and_get_sampling_client()
+
+    assert isinstance(sampler, SamplingClient)
+    assert sampler.sample(ModelInput.from_ints([1]), sampling_params=SamplingParams(max_tokens=2)).result().sequences[0].text == "trained"
+    assert service.model_path is None
+
+
+def test_save_weights_and_get_sampling_client_uses_service_for_replicas():
+    service = FakeService()
+    client = TrainingClient(session_id="train", actor=FakeTrainerActor(), service=service)
+
+    sampler = client.save_weights_and_get_sampling_client(replicas=2)
 
     assert isinstance(sampler, SamplingClient)
     assert service.model_path == "/tmp/sampler"
@@ -177,6 +199,24 @@ def test_service_client_accepts_tinker_signature_and_metadata(monkeypatch):
         "owner": "test",
         "run": "one",
     }
+
+
+def test_service_client_uses_configured_lora_targets_by_default(monkeypatch):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config={"lora": {"target_modules": ["q_proj", "v_proj"]}})
+
+    client.create_lora_training_client()
+
+    assert client._session.training_kwargs["target_modules"] is None
+
+
+def test_service_client_explicit_flags_override_configured_lora_targets(monkeypatch):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config={"lora": {"target_modules": ["q_proj", "v_proj"]}})
+
+    client.create_lora_training_client(train_mlp=False, train_attn=True, train_unembed=False)
+
+    assert client._session.training_kwargs["target_modules"] == ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 
 def test_modal_actor_handle_matches_remote_call_shape():

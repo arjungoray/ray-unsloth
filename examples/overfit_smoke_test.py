@@ -26,11 +26,18 @@ DEFAULT_PROMPT = (
 DEFAULT_TARGET = " blue maple."
 
 
+def strip_trailing_eos(tokens: list[int], tokenizer) -> list[int]:
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if eos_token_id is not None and tokens and tokens[-1] == eos_token_id:
+        return tokens[:-1]
+    return tokens
+
+
 def build_sft_datum(tokenizer, prompt: str, target: str) -> tuple[Datum, ModelInput, int]:
     prompt_encoded = tokenizer(prompt, add_special_tokens=True)
     full_encoded = tokenizer(prompt + target, add_special_tokens=True)
 
-    prompt_tokens = prompt_encoded["input_ids"]
+    prompt_tokens = strip_trailing_eos(list(prompt_encoded["input_ids"]), tokenizer)
     full_tokens = full_encoded["input_ids"]
     labels = [-100] * len(prompt_tokens)
     labels.extend(full_tokens[len(prompt_tokens) :])
@@ -112,8 +119,8 @@ def sample_with_feature_checks(sampler, prompt_input: ModelInput, max_tokens: in
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/example.yaml")
-    parser.add_argument("--steps", type=int, default=48)
-    parser.add_argument("--learning-rate", type=float, default=2e-5)
+    parser.add_argument("--steps", type=int, default=16)
+    parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--target", default=DEFAULT_TARGET)
     args = parser.parse_args()

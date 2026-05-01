@@ -122,9 +122,12 @@ python examples/sft_loop.py
 ## Configuration
 
 Runtime behavior is configured with `RuntimeConfig` or YAML. The example config
-in `configs/example.yaml` defines Ray connection settings, the base model,
-LoRA parameters, resource requests for trainer and sampler actors, checkpoint
-root, and supported model metadata.
+in `configs/example.yaml` defines Ray connection settings, default model and
+LoRA parameters, model-specific `model_configs`, resource requests for trainer
+and sampler actors, checkpoint root, and supported model metadata. Passing a
+configured alias such as `base_model="gemma4-e3b-it"`,
+`base_model="lfm2.5-1.2b-instruct"`, or `base_model="qwen3.5-4b"` selects
+that model's full Unsloth `from_pretrained` and `get_peft_model` recipe.
 
 ## Development
 

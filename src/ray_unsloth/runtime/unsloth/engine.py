@@ -94,11 +94,11 @@ class UnslothEngine:
             target_modules=self.lora_config.target_modules,
             lora_alpha=self.lora_config.alpha,
             lora_dropout=self.lora_config.dropout,
-            bias="none",
-            use_gradient_checkpointing="unsloth",
+            bias=self.lora_config.bias,
+            use_gradient_checkpointing=self.lora_config.use_gradient_checkpointing,
             random_state=self.lora_config.random_state,
             use_rslora=self.lora_config.use_rslora,
-            loftq_config=None,
+            loftq_config=self.lora_config.loftq_config,
         )
         return model, tokenizer
 
@@ -287,62 +287,19 @@ class UnslothEngine:
         FastLanguageModel.for_inference(self.model)
         sampling_params = sampling_params or SamplingParams()
         prompt_tokens = prompt.to_ints() if isinstance(prompt, ModelInput) else list(prompt)
-        input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self.model.device)
         stop_token_ids = self._stop_token_ids(sampling_params.stop)
-        do_sample = sampling_params.temperature > 0
-        generation_kwargs = {
-            "max_new_tokens": sampling_params.max_tokens,
-            "do_sample": do_sample,
-            "num_return_sequences": num_samples,
-            "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-            "remove_invalid_values": True,
-            "renormalize_logits": True,
-            "return_dict_in_generate": True,
-            "output_scores": True,
-        }
-        if stop_token_ids:
-            from transformers import StoppingCriteria, StoppingCriteriaList
-
-            class StopOnTokenSequences(StoppingCriteria):
-                def __init__(self, stop_sequences: list[list[int]], prompt_length: int):
-                    self.stop_sequences = stop_sequences
-                    self.prompt_length = prompt_length
-
-                def __call__(self, input_ids, scores, **kwargs) -> bool:
-                    del scores, kwargs
-                    if input_ids.shape[1] <= self.prompt_length:
-                        return False
-                    for row in input_ids:
-                        generated = row[self.prompt_length :].tolist()
-                        if not any(
-                            len(generated) >= len(stop) and generated[-len(stop) :] == stop
-                            for stop in self.stop_sequences
-                        ):
-                            return False
-                    return True
-
-            generation_kwargs["stopping_criteria"] = StoppingCriteriaList(
-                [StopOnTokenSequences(stop_token_ids, len(prompt_tokens))]
-            )
-        if do_sample:
-            generation_kwargs["temperature"] = sampling_params.temperature
-            generation_kwargs["top_p"] = sampling_params.top_p
-        if do_sample and sampling_params.top_k is not None and sampling_params.top_k > 0:
-            generation_kwargs["top_k"] = sampling_params.top_k
         if sampling_params.seed is not None:
             torch.manual_seed(sampling_params.seed)
-        with torch.no_grad():
-            outputs = self.model.generate(input_ids=input_ids, **generation_kwargs)
-        generated_logprobs = self._generated_logprobs(outputs)
+
+        generated_outputs = self._generate_with_forward_loop(
+            prompt_tokens=prompt_tokens,
+            num_samples=num_samples,
+            sampling_params=sampling_params,
+            stop_token_ids=stop_token_ids,
+        )
         sequences = []
-        for index, output in enumerate(outputs.sequences):
-            tokens = output.detach().cpu().tolist()
-            completion_tokens = tokens[len(prompt_tokens) :]
-            completion_tokens, finish_reason = self._trim_stop_tokens(completion_tokens, stop_token_ids)
-            if finish_reason != "stop":
-                finish_reason = self._finish_reason(completion_tokens, sampling_params.max_tokens)
+        for completion_tokens, sequence_logprobs, finish_reason in generated_outputs:
             text = self.tokenizer.decode(completion_tokens, skip_special_tokens=True)
-            sequence_logprobs = generated_logprobs[index][: len(completion_tokens)] if generated_logprobs else None
             sequences.append(
                 GeneratedSequence(
                     tokens=completion_tokens,
@@ -363,10 +320,126 @@ class UnslothEngine:
             topk_prompt_logprobs=topk,
         )
 
+    def _generate_with_forward_loop(
+        self,
+        *,
+        prompt_tokens: list[int],
+        num_samples: int,
+        sampling_params: SamplingParams,
+        stop_token_ids: list[list[int]],
+    ) -> list[tuple[list[int], list[float | None], str]]:
+        import torch
+
+        outputs = []
+        for _sample_index in range(num_samples):
+            context = list(prompt_tokens)
+            completion_tokens: list[int] = []
+            logprobs: list[float | None] = []
+            finish_reason: str | None = None
+
+            for _step in range(sampling_params.max_tokens):
+                input_ids = torch.tensor([context], dtype=torch.long, device=self.model.device)
+                attention_mask = torch.tensor([[1] * len(context)], dtype=torch.long, device=self.model.device)
+                with torch.no_grad():
+                    model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+                logits = model_outputs.logits[:, -1, :].squeeze(0).float()
+                logits = torch.nan_to_num(logits, nan=-1e30, posinf=1e30, neginf=-1e30)
+                next_token, logprob = self._next_sampled_token(logits, sampling_params)
+
+                completion_tokens.append(next_token)
+                logprobs.append(logprob)
+                context.append(next_token)
+
+                if self._is_eos_token(next_token):
+                    finish_reason = "eos"
+                    break
+                if self._ends_with_stop(completion_tokens, stop_token_ids):
+                    finish_reason = "stop"
+                    break
+
+            if finish_reason == "stop":
+                trimmed_tokens, _stop_reason = self._trim_stop_tokens(completion_tokens, stop_token_ids)
+                logprobs = logprobs[: len(trimmed_tokens)]
+                completion_tokens = trimmed_tokens
+            if finish_reason is None:
+                finish_reason = "length" if len(completion_tokens) >= sampling_params.max_tokens else "stop"
+            outputs.append((completion_tokens, logprobs, finish_reason))
+        return outputs
+
+    def _next_sampled_token(self, logits, sampling_params: SamplingParams) -> tuple[int, float]:
+        import torch
+
+        log_probs = logits.log_softmax(dim=-1)
+        if sampling_params.temperature <= 0:
+            token = int(torch.argmax(logits).detach().cpu())
+            return token, float(log_probs[token].detach().cpu())
+
+        filtered_logits = logits / sampling_params.temperature
+        filtered_logits = self._apply_top_k_top_p(
+            filtered_logits,
+            top_k=sampling_params.top_k,
+            top_p=sampling_params.top_p,
+        )
+        probs = torch.softmax(filtered_logits, dim=-1)
+        token = int(torch.multinomial(probs, num_samples=1).detach().cpu())
+        return token, float(log_probs[token].detach().cpu())
+
+    def _apply_top_k_top_p(self, logits, *, top_k: int | None, top_p: float):
+        import torch
+
+        filtered = logits.clone()
+        if top_k is not None and top_k > 0 and top_k < filtered.numel():
+            values, _indices = torch.topk(filtered, k=top_k)
+            filtered = filtered.masked_fill(filtered < values[-1], -float("inf"))
+
+        if 0 < top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(filtered, descending=True)
+            sorted_probs = torch.softmax(sorted_logits, dim=-1)
+            remove = sorted_probs.cumsum(dim=-1) > top_p
+            remove[1:] = remove[:-1].clone()
+            remove[0] = False
+            filtered[sorted_indices[remove]] = -float("inf")
+
+        if torch.isinf(filtered).all():
+            return logits
+        return filtered
+
+    def _is_eos_token(self, token: int) -> bool:
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        return eos_token_id is not None and token == eos_token_id
+
+    def _ends_with_stop(self, tokens: list[int], stop_token_ids: list[list[int]]) -> bool:
+        return any(len(tokens) >= len(stop) and tokens[-len(stop) :] == stop for stop in stop_token_ids)
+
+    def _encode_text(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        text_tokenizer = getattr(self.tokenizer, "tokenizer", None)
+        if text_tokenizer is not None and hasattr(text_tokenizer, "encode"):
+            return list(text_tokenizer.encode(text, add_special_tokens=add_special_tokens))
+        if hasattr(self.tokenizer, "encode"):
+            return list(self.tokenizer.encode(text, add_special_tokens=add_special_tokens))
+
+        try:
+            encoded = self.tokenizer(text=text, add_special_tokens=add_special_tokens)
+        except TypeError:
+            encoded = self.tokenizer(text, add_special_tokens=add_special_tokens)
+        if isinstance(encoded, dict):
+            tokens = encoded["input_ids"]
+        elif hasattr(encoded, "input_ids"):
+            tokens = encoded.input_ids
+        else:
+            tokens = encoded
+        if hasattr(tokens, "tolist"):
+            tokens = tokens.tolist()
+        if tokens and isinstance(tokens[0], list):
+            if len(tokens) != 1:
+                raise ValueError("Expected a single tokenized stop sequence")
+            tokens = tokens[0]
+        return list(tokens)
+
     def _stop_token_ids(self, stops: list[str]) -> list[list[int]]:
         tokenized = []
         for stop in stops:
-            tokens = self.tokenizer.encode(stop, add_special_tokens=False)
+            tokens = self._encode_text(stop, add_special_tokens=False)
             if tokens:
                 tokenized.append(tokens)
         return tokenized

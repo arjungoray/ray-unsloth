@@ -30,6 +30,74 @@ def test_runtime_config_from_dict():
     assert config.modal.volume_name == "test-volume"
 
 
+def test_runtime_config_resolves_model_specific_configs():
+    config = RuntimeConfig.from_dict(
+        {
+            "model": {"base_model": "default/model", "max_seq_length": 1024},
+            "lora": {"rank": 32, "target_modules": ["default_proj"]},
+            "model_configs": {
+                "qwen3.5-4b": {
+                    "model": {
+                        "base_model": "Qwen/Qwen3.5-4B",
+                        "max_seq_length": 4096,
+                        "load_in_4bit": False,
+                    },
+                    "lora": {
+                        "rank": 16,
+                        "target_modules": ["q_proj", "k_proj", "v_proj"],
+                    },
+                }
+            },
+        }
+    )
+
+    model, lora = config.resolve_model_configs("qwen3.5-4b")
+    same_model, same_lora = config.resolve_model_configs("Qwen/Qwen3.5-4B")
+    unknown_model, unknown_lora = config.resolve_model_configs("other/model")
+
+    assert model.base_model == "Qwen/Qwen3.5-4B"
+    assert model.max_seq_length == 4096
+    assert model.load_in_4bit is False
+    assert lora.rank == 16
+    assert lora.target_modules == ["q_proj", "k_proj", "v_proj"]
+    assert same_model == model
+    assert same_lora == lora
+    assert unknown_model.base_model == "other/model"
+    assert unknown_model.max_seq_length == 1024
+    assert unknown_lora.rank == 32
+
+
+def test_runtime_config_uses_selected_model_config_as_default():
+    config = RuntimeConfig.from_dict(
+        {
+            "model": {"config": "qwen3.5-4b"},
+            "lora": {"rank": 32, "target_modules": ["default_proj"]},
+            "model_configs": {
+                "qwen3.5-4b": {
+                    "model": {
+                        "base_model": "Qwen/Qwen3.5-4B",
+                        "max_seq_length": 2048,
+                        "load_in_4bit": False,
+                    },
+                    "lora": {
+                        "rank": 16,
+                        "target_modules": ["q_proj", "k_proj", "v_proj"],
+                    },
+                }
+            },
+        }
+    )
+
+    model, lora = config.resolve_model_configs()
+
+    assert config.default_model_config == "qwen3.5-4b"
+    assert model.base_model == "Qwen/Qwen3.5-4B"
+    assert model.max_seq_length == 2048
+    assert model.load_in_4bit is False
+    assert lora.rank == 16
+    assert lora.target_modules == ["q_proj", "k_proj", "v_proj"]
+
+
 def test_atomic_checkpoint_manifest(tmp_path: Path):
     target = tmp_path / "checkpoint"
 

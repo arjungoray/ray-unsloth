@@ -35,11 +35,20 @@ class ServiceClient:
             return True
         if not isinstance(value, dict):
             return False
-        config_keys = {"ray", "model", "lora", "resources", "modal", "checkpoint_root", "supported_models"}
+        config_keys = {
+            "ray",
+            "model",
+            "lora",
+            "model_configs",
+            "resources",
+            "modal",
+            "checkpoint_root",
+            "supported_models",
+        }
         return any(key in value for key in config_keys)
 
     def get_server_capabilities(self) -> GetServerCapabilitiesResponse:
-        supported = self.config.supported_models or [self.config.model.base_model]
+        supported = self.config.supported_model_names()
         return GetServerCapabilitiesResponse(
             supported_models=supported,
             max_sampler_replicas=self.config.resources.sampler_replicas,
@@ -59,24 +68,27 @@ class ServiceClient:
         base_model: str | None = None,
         rank: int | None = None,
         seed: int | None = None,
-        train_mlp: bool = True,
-        train_attn: bool = True,
-        train_unembed: bool = True,
+        train_mlp: bool | None = None,
+        train_attn: bool | None = None,
+        train_unembed: bool | None = None,
         user_metadata: dict[str, str] | None = None,
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> TrainingClient:
         del kwargs
         run_metadata = self._merged_metadata(metadata, user_metadata)
+        target_modules = None
+        if train_mlp is not None or train_attn is not None or train_unembed is not None:
+            target_modules = lora_target_modules_for_flags(
+                train_mlp=True if train_mlp is None else train_mlp,
+                train_attn=True if train_attn is None else train_attn,
+                train_unembed=True if train_unembed is None else train_unembed,
+            )
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             seed=seed,
-            target_modules=lora_target_modules_for_flags(
-                train_mlp=train_mlp,
-                train_attn=train_attn,
-                train_unembed=train_unembed,
-            ),
+            target_modules=target_modules,
             metadata=run_metadata,
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self)

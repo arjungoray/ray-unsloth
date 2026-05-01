@@ -83,7 +83,12 @@ class RaySession:
     ) -> tuple[str, Any]:
         session_id = f"train-{uuid.uuid4().hex}"
         model_config = self._model_config(base_model)
-        lora_config = self._lora_config(lora_rank, seed=seed, target_modules=target_modules)
+        lora_config = self._lora_config(
+            lora_rank,
+            base_model=base_model,
+            seed=seed,
+            target_modules=target_modules,
+        )
         options = {
             "num_gpus": self.config.resources.trainer_num_gpus,
             "num_cpus": self.config.resources.trainer_num_cpus,
@@ -112,7 +117,7 @@ class RaySession:
     ) -> tuple[str, list[Any]]:
         session_id = f"sample-{uuid.uuid4().hex}"
         model_config = self._model_config(base_model)
-        lora_config = self._lora_config(None)
+        lora_config = self._lora_config(None, base_model=base_model)
         replica_count = replicas if replicas is not None else self.config.resources.sampler_replicas
         actors = []
         for index in range(replica_count):
@@ -136,17 +141,18 @@ class RaySession:
         return session_id, actors
 
     def _model_config(self, base_model: str | None) -> ModelConfig:
-        if base_model is None:
-            return self.config.model
-        return replace(self.config.model, base_model=base_model)
+        model_config, _lora_config = self.config.resolve_model_configs(base_model)
+        return model_config
 
     def _lora_config(
         self,
         rank: int | None,
         *,
+        base_model: str | None = None,
         seed: int | None = None,
         target_modules: list[str] | None = None,
     ) -> LoRAConfig:
+        _model_config, lora_config = self.config.resolve_model_configs(base_model)
         updates: dict[str, Any] = {}
         if rank is not None:
             updates["rank"] = rank
@@ -155,5 +161,5 @@ class RaySession:
         if target_modules is not None:
             updates["target_modules"] = target_modules
         if not updates:
-            return self.config.lora
-        return replace(self.config.lora, **updates)
+            return lora_config
+        return replace(lora_config, **updates)

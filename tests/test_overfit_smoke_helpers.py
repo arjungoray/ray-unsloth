@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from ray_unsloth import GeneratedSequence, ModelInput, SampleResponse
+from ray_unsloth.runtime.unsloth.engine import UnslothEngine
 
 
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "overfit_smoke_test.py"
@@ -24,6 +25,32 @@ class FakeTokenizer:
         return {"input_ids": [ord(char) for char in text]}
 
 
+class FakeTokenizerWithEos:
+    eos_token_id = 99
+
+    def __call__(self, text, add_special_tokens=True):
+        tokens = [ord(char) for char in text]
+        if add_special_tokens:
+            tokens.append(self.eos_token_id)
+        return {"input_ids": tokens}
+
+
+class FakeProcessorWithoutEncode:
+    def __call__(self, text=None, add_special_tokens=True):
+        del add_special_tokens
+        return {"input_ids": [ord(char) for char in text]}
+
+
+class FakeNestedTokenizer:
+    def encode(self, text, add_special_tokens=True):
+        del add_special_tokens
+        return [ord(char) for char in text]
+
+
+class FakeProcessorWithNestedTokenizer:
+    tokenizer = FakeNestedTokenizer()
+
+
 def test_build_sft_datum_masks_prompt_tokens():
     datum, prompt_input, target_token_count = build_sft_datum(FakeTokenizer(), "Question:", " answer")
 
@@ -33,6 +60,31 @@ def test_build_sft_datum_masks_prompt_tokens():
         ord(char) for char in " answer"
     ]
     assert target_token_count == len(" answer")
+
+
+def test_build_sft_datum_strips_prompt_only_eos():
+    datum, prompt_input, target_token_count = build_sft_datum(FakeTokenizerWithEos(), "Question:", " answer")
+
+    assert prompt_input.to_ints() == [ord(char) for char in "Question:"]
+    assert datum.model_input.to_ints() == [ord(char) for char in "Question: answer"] + [99]
+    assert datum.loss_fn_inputs["labels"] == [-100] * len("Question:") + [
+        ord(char) for char in " answer"
+    ] + [99]
+    assert target_token_count == len(" answer") + 1
+
+
+def test_stop_token_ids_supports_processors_without_encode():
+    engine = object.__new__(UnslothEngine)
+    engine.tokenizer = FakeProcessorWithoutEncode()
+
+    assert UnslothEngine._stop_token_ids(engine, ["."]) == [[ord(".")]]
+
+
+def test_stop_token_ids_prefers_nested_text_tokenizer():
+    engine = object.__new__(UnslothEngine)
+    engine.tokenizer = FakeProcessorWithNestedTokenizer()
+
+    assert UnslothEngine._stop_token_ids(engine, ["."]) == [[ord(".")]]
 
 
 def test_assert_meaningful_generation_rejects_punctuation_only():
