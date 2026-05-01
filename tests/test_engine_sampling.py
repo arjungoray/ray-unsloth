@@ -5,7 +5,7 @@ import torch
 
 from ray_unsloth.config import LoRAConfig, ModelConfig
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
-from ray_unsloth.types import ModelInput, SamplingParams
+from ray_unsloth.types import Datum, ModelInput, SamplingParams, TensorData
 
 
 class FakeTokenizer:
@@ -44,6 +44,21 @@ class FakeFastLanguageModel:
     @staticmethod
     def for_inference(model):
         del model
+
+    @staticmethod
+    def for_training(model):
+        del model
+
+
+class FakeLossModel:
+    device = "cpu"
+
+    def __call__(self, input_ids, attention_mask=None):
+        del attention_mask
+        logits = torch.full((input_ids.shape[0], input_ids.shape[1], 8), -10.0)
+        logits[:, :, 3] = 0.0
+        logits[:, :, 4] = -0.5
+        return SimpleNamespace(logits=logits)
 
 
 def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp_path):
@@ -132,3 +147,44 @@ def test_sample_returns_generated_tokens_and_prompt_logprobs(monkeypatch):
     assert engine.model.forward_input_ids[1] == [[10, 11, 11]]
     assert engine.model.forward_attention_masks[0] == [[1, 1]]
     assert engine.model.forward_attention_masks[1] == [[1, 1, 1]]
+
+
+def test_cross_entropy_accepts_tinker_target_tokens_and_weights():
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = FakeLossModel()
+    engine.tokenizer = FakeTokenizer()
+    datum = Datum(
+        model_input=ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": TensorData(data=[3, 4], dtype="int64", shape=[2]),
+            "weights": TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+        },
+    )
+
+    loss, _outputs, logprobs = engine._cross_entropy_loss([datum])
+    loss_outputs = engine._loss_fn_outputs(logprobs)
+
+    assert loss.item() > 0
+    assert loss_outputs[0]["logprobs"].tolist()[0] == 0.0
+    assert loss_outputs[0]["logprobs"].tolist()[1] < 0.0
+
+
+def test_policy_loss_returns_logprobs_and_ratios():
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = FakeLossModel()
+    engine.tokenizer = FakeTokenizer()
+    datum = Datum(
+        model_input=ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": TensorData(data=[3, 4], dtype="int64", shape=[2]),
+            "logprobs": TensorData(data=[0.0, -1.0], dtype="float32", shape=[2]),
+            "advantages": TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+        },
+    )
+
+    loss, _outputs, logprobs, ratios = engine._policy_loss([datum], loss_fn="importance_sampling")
+    loss_outputs = engine._loss_fn_outputs(logprobs, ratios=ratios)
+
+    assert torch.isfinite(loss)
+    assert loss_outputs[0]["logprobs"].tolist()[1] < 0.0
+    assert loss_outputs[0]["ratios"].tolist()[1] > 0.0

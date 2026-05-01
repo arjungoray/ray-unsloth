@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ray_unsloth.types import future_from
+from ray_unsloth.types import AsyncMethodFuture, future_from
 
 
 def call(actor: Any, method_name: str, *args, **kwargs):
@@ -13,6 +13,20 @@ def call(actor: Any, method_name: str, *args, **kwargs):
     if callable(remote):
         return future_from(remote(*args, **kwargs))
     return future_from(method(*args, **kwargs))
+
+
+def call_async(actor: Any, method_name: str, *args, **kwargs):
+    method = getattr(actor, method_name)
+    remote = getattr(method, "remote", None)
+    remote_async = getattr(method, "remote_async", None)
+    if callable(remote_async):
+        return AsyncMethodFuture(
+            submit_sync=lambda: future_from(remote(*args, **kwargs)),
+            submit_async=lambda: remote_async(*args, **kwargs),
+        )
+    if callable(remote):
+        return AsyncMethodFuture(submit_sync=lambda: future_from(remote(*args, **kwargs)))
+    return AsyncMethodFuture(submit_sync=lambda: future_from(method(*args, **kwargs)))
 
 
 def resolve(value: Any) -> Any:

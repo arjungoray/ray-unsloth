@@ -85,6 +85,16 @@ class _ModalMethod:
             kwargs=kwargs,
         )
 
+    async def remote_async(self, *args, **kwargs):
+        return await self._actor._session.invoke_async(
+            actor_kind=self._actor.actor_kind,
+            session_id=self._actor.session_id,
+            init_kwargs=self._actor.init_kwargs,
+            method_name=self._method_name,
+            args=args,
+            kwargs=kwargs,
+        )
+
 
 class ModalActorHandle:
     """Small local handle exposing Ray-like actor method calls."""
@@ -232,6 +242,18 @@ class ModalSession:
         kwargs: dict[str, Any],
     ) -> Any:
         return self._invoke.remote(actor_kind, session_id, init_kwargs, method_name, args, kwargs)
+
+    async def invoke_async(
+        self,
+        *,
+        actor_kind: str,
+        session_id: str,
+        init_kwargs: dict[str, Any],
+        method_name: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        return await self._invoke.remote.aio(actor_kind, session_id, init_kwargs, method_name, args, kwargs)
 
     def create_training_actor(
         self,

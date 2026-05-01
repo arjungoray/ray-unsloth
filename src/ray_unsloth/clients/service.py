@@ -20,7 +20,9 @@ class ServiceClient:
         user_metadata: dict[str, str] | str | RuntimeConfig | dict[str, Any] | None = None,
         project_id: str | None = None,
         config: str | RuntimeConfig | dict[str, Any] | None = None,
+        base_url: str | None = None,
     ):
+        del base_url
         if config is None and self._looks_like_config(user_metadata):
             config = user_metadata
             user_metadata = None

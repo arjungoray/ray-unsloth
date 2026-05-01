@@ -1,7 +1,9 @@
 from ray_unsloth.types import (
     AdamParams,
     Datum,
+    EncodedTextChunk,
     GeneratedSequence,
+    ImageChunk,
     ImmediateFuture,
     ModelInput,
     SampleResponse,
@@ -15,8 +17,25 @@ def test_model_input_round_trips_ints():
     model_input = ModelInput.from_ints([1, 2, 3])
 
     assert model_input.to_ints() == [1, 2, 3]
+    assert model_input.chunks == [EncodedTextChunk(tokens=[1, 2, 3])]
     assert model_input.length == 3
     assert ModelInput.empty().append(model_input).append_int(4).to_ints() == [1, 2, 3, 4]
+
+
+def test_model_input_accepts_tinker_chunks_and_rejects_image_to_ints():
+    model_input = ModelInput(chunks=[EncodedTextChunk(tokens=[1]), EncodedTextChunk(tokens=[2, 3])])
+
+    assert model_input.to_ints() == [1, 2, 3]
+    assert model_input.append(EncodedTextChunk(tokens=[4])).to_ints() == [1, 2, 3, 4]
+
+    image_input = model_input.append(ImageChunk(data=b"jpeg", format="jpeg", expected_tokens=8))
+    assert image_input.length == 11
+    try:
+        image_input.to_ints()
+    except ValueError as exc:
+        assert "EncodedTextChunks" in str(exc)
+    else:
+        raise AssertionError("expected image-containing ModelInput.to_ints() to fail")
 
 
 def test_immediate_future_matches_ray_future_shape():
@@ -77,3 +96,27 @@ def test_datum_converts_tensor_like_loss_inputs():
     )
 
     assert datum.loss_fn_inputs["labels"] == TensorData(data=[1, 2], dtype="int64", shape=[2])
+
+
+def test_tensor_data_from_array_helpers_round_trip():
+    import numpy as np
+    import torch
+
+    from_numpy = TensorData.from_numpy(np.array([[1, 2], [3, 4]], dtype=np.int64))
+    from_torch = TensorData.from_torch(torch.tensor([0.25, 0.75], dtype=torch.float32))
+
+    assert from_numpy.data == [1, 2, 3, 4]
+    assert from_numpy.tolist() == [[1, 2], [3, 4]]
+    assert from_torch.dtype == "float32"
+    assert from_torch.tolist() == [0.25, 0.75]
+
+
+def test_tinker_import_alias_exposes_types():
+    import tinker
+    from tinker.lib.public_interfaces import APIFuture
+    from tinker.types.tensor_data import TensorData as TinkerTensorData
+
+    assert tinker.ModelInput.from_ints([1]).to_ints() == [1]
+    assert tinker.types.EncodedTextChunk(tokens=[1]).length == 1
+    assert TinkerTensorData(data=[1], dtype="int64").tolist() == [1]
+    assert APIFuture[tinker.ForwardBackwardOutput]

@@ -153,35 +153,182 @@ class UnslothEngine:
             "attention_mask": torch.tensor(attention, dtype=torch.long, device=self.model.device),
         }
 
-    def _labels_from_data(self, data: list[Datum], input_ids):
+    def _loss_tensor_data(self, raw: Any) -> list[Any]:
+        if isinstance(raw, ModelInput):
+            return raw.to_ints()
+        if isinstance(raw, TensorData):
+            raw = raw.tolist()
+        elif hasattr(raw, "tolist"):
+            raw = raw.tolist()
+        return list(raw)
+
+    def _label_rows_from_data(self, data: list[Datum], input_ids):
         import torch
 
-        labels = []
+        rows = []
         for datum, input_row in zip(data, input_ids):
             raw = datum.loss_fn_inputs.get("labels") or datum.loss_fn_inputs.get("target_tokens")
             if raw is None:
-                labels.append(input_row.detach().clone())
+                row = input_row.detach().clone().tolist()
             else:
-                row = self._loss_tokens(raw)
-                if len(row) < input_ids.shape[1]:
-                    row = row + [-100] * (input_ids.shape[1] - len(row))
-                labels.append(torch.tensor(row[: input_ids.shape[1]], dtype=torch.long, device=input_ids.device))
-        return torch.stack(labels)
+                row = [int(value) for value in self._loss_tensor_data(raw)]
+            if len(row) < input_ids.shape[1]:
+                row = row + [-100] * (input_ids.shape[1] - len(row))
+            rows.append(torch.tensor(row[: input_ids.shape[1]], dtype=torch.long, device=input_ids.device))
+        return torch.stack(rows)
 
     def _loss_tokens(self, raw: Any) -> list[int]:
         if isinstance(raw, ModelInput):
             return raw.to_ints()
         if isinstance(raw, TensorData):
-            raw = raw.data
+            raw = raw.tolist()
         if hasattr(raw, "tolist"):
             raw = raw.tolist()
         return list(raw)
 
     def _cross_entropy_loss(self, data: list[Datum]):
+        import torch
+
         batch = self._batch_from_data(data)
-        labels = self._labels_from_data(data, batch["input_ids"])
-        outputs = self.model(**batch, labels=labels)
-        return outputs.loss, outputs
+        outputs = self.model(**batch)
+        log_probs = outputs.logits.log_softmax(dim=-1)
+
+        external_logprobs = torch.zeros(
+            batch["input_ids"].shape,
+            dtype=log_probs.dtype,
+            device=log_probs.device,
+        )
+        total_loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
+        total_weight = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
+
+        for row_idx, datum in enumerate(data):
+            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
+            has_target_tokens = "target_tokens" in datum.loss_fn_inputs
+            raw_targets = datum.loss_fn_inputs.get("target_tokens")
+            raw_labels = datum.loss_fn_inputs.get("labels")
+            raw_weights = datum.loss_fn_inputs.get("weights")
+
+            if has_target_tokens and raw_targets is not None:
+                targets = [int(value) for value in self._loss_tensor_data(raw_targets)][:input_len]
+                positions = list(range(min(input_len, len(targets))))
+                output_indices = positions
+            else:
+                labels = (
+                    [int(value) for value in self._loss_tensor_data(raw_labels)][:input_len]
+                    if raw_labels is not None
+                    else batch["input_ids"][row_idx, :input_len].detach().cpu().tolist()
+                )
+                targets = labels
+                positions = list(range(1, min(input_len, len(labels))))
+                output_indices = positions
+
+            weights = None
+            if raw_weights is not None:
+                weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
+
+            for output_index, target_index in zip(output_indices, positions):
+                target_token = int(targets[target_index])
+                if target_token == -100:
+                    continue
+                weight = 1.0
+                if weights is not None:
+                    weight = float(weights[target_index])
+                if weight == 0.0:
+                    continue
+                logit_index = target_index if has_target_tokens else target_index - 1
+                token_logprob = log_probs[row_idx, logit_index, target_token]
+                external_logprobs[row_idx, output_index] = token_logprob
+                total_loss = total_loss - token_logprob * weight
+                total_weight = total_weight + weight
+
+        loss = total_loss
+        return loss, outputs, external_logprobs
+
+    def _policy_loss(
+        self,
+        data: list[Datum],
+        *,
+        loss_fn: str,
+        loss_fn_config: dict[str, Any] | None = None,
+    ):
+        import torch
+
+        loss_fn_config = loss_fn_config or {}
+        batch = self._batch_from_data(data)
+        outputs = self.model(**batch)
+        log_probs = outputs.logits.log_softmax(dim=-1)
+        external_logprobs = torch.zeros(
+            batch["input_ids"].shape,
+            dtype=log_probs.dtype,
+            device=log_probs.device,
+        )
+        external_ratios = torch.zeros_like(external_logprobs)
+        total_loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
+        clip_low = float(loss_fn_config.get("clip_low_threshold", 0.8))
+        clip_high = float(loss_fn_config.get("clip_high_threshold", 1.2))
+
+        for row_idx, datum in enumerate(data):
+            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
+            targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][:input_len]
+            old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][:input_len]
+            advantages = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["advantages"])][:input_len]
+            raw_weights = datum.loss_fn_inputs.get("weights")
+            weights = [1.0] * input_len
+            if raw_weights is not None:
+                weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
+
+            for pos, target_token in enumerate(targets):
+                if target_token == -100 or pos >= input_len:
+                    continue
+                weight = weights[pos] if pos < len(weights) else 1.0
+                advantage = advantages[pos] if pos < len(advantages) else 0.0
+                if weight == 0.0 or advantage == 0.0:
+                    continue
+                current_logprob = log_probs[row_idx, pos, target_token]
+                old_logprob = old_logprobs[pos] if pos < len(old_logprobs) else 0.0
+                ratio = torch.exp(current_logprob - old_logprob)
+                external_logprobs[row_idx, pos] = current_logprob
+                external_ratios[row_idx, pos] = ratio
+                weighted_advantage = weight * advantage
+                if loss_fn == "importance_sampling":
+                    token_loss = -ratio * weighted_advantage
+                elif loss_fn == "ppo":
+                    clipped_ratio = ratio.clamp(clip_low, clip_high)
+                    token_loss = -torch.minimum(ratio * weighted_advantage, clipped_ratio * weighted_advantage)
+                elif loss_fn == "cispo":
+                    clipped_ratio = ratio.detach().clamp(clip_low, clip_high)
+                    token_loss = -clipped_ratio * weighted_advantage * current_logprob
+                else:
+                    raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+                total_loss = total_loss + token_loss
+
+        return total_loss, outputs, external_logprobs, external_ratios
+
+    def _loss_fn_outputs(
+        self,
+        row_logprobs: Any,
+        *,
+        ratios: Any | None = None,
+    ) -> list[dict[str, TensorData]]:
+        rows: list[dict[str, TensorData]] = []
+        for row_idx in range(row_logprobs.shape[0]):
+            values = [float(value) for value in row_logprobs[row_idx].detach().cpu()]
+            output = {
+                "logprobs": TensorData(
+                    data=values,
+                    dtype=str(row_logprobs.dtype).removeprefix("torch."),
+                    shape=[len(values)],
+                )
+            }
+            if ratios is not None:
+                ratio_values = [float(value) for value in ratios[row_idx].detach().cpu()]
+                output["ratios"] = TensorData(
+                    data=ratio_values,
+                    dtype=str(ratios.dtype).removeprefix("torch."),
+                    shape=[len(ratio_values)],
+                )
+            rows.append(output)
+        return rows
 
     def _token_logprobs(self, tokens: list[int]) -> list[float | None]:
         import torch
@@ -204,12 +351,18 @@ class UnslothEngine:
         import torch
         from unsloth import FastLanguageModel
 
-        if loss_fn != "cross_entropy":
-            raise UnsupportedLossError(f"Unsupported non-RL loss: {loss_fn}")
         FastLanguageModel.for_inference(self.model)
         with torch.no_grad():
-            loss, _outputs = self._cross_entropy_loss(data)
-        return ForwardOutput(loss=float(loss.detach().cpu()), metrics={"loss": float(loss.detach().cpu())})
+            if loss_fn == "cross_entropy":
+                loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
+                loss_fn_outputs = self._loss_fn_outputs(row_logprobs)
+            elif loss_fn in {"importance_sampling", "ppo", "cispo"}:
+                loss, _outputs, row_logprobs, ratios = self._policy_loss(data, loss_fn=loss_fn)
+                loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
+            else:
+                raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+        value = float(loss.detach().cpu())
+        return ForwardOutput(loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs)
 
     def forward_backward(
         self,
@@ -217,22 +370,28 @@ class UnslothEngine:
         loss_fn: str = "cross_entropy",
         loss_fn_config: dict[str, Any] | None = None,
     ) -> ForwardBackwardOutput:
-        del loss_fn_config
         import torch
         from unsloth import FastLanguageModel
 
-        if loss_fn != "cross_entropy":
-            raise UnsupportedLossError(
-                f"Unsupported loss '{loss_fn}'. The MVP intentionally excludes RL losses."
-            )
         FastLanguageModel.for_training(self.model)
         self._ensure_optimizer()
-        loss, _outputs = self._cross_entropy_loss(data)
+        if loss_fn == "cross_entropy":
+            loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
+            loss_fn_outputs = self._loss_fn_outputs(row_logprobs)
+        elif loss_fn in {"importance_sampling", "ppo", "cispo"}:
+            loss, _outputs, row_logprobs, ratios = self._policy_loss(
+                data,
+                loss_fn=loss_fn,
+                loss_fn_config=loss_fn_config,
+            )
+            loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
+        else:
+            raise UnsupportedLossError(f"Unsupported loss '{loss_fn}'.")
         if not torch.isfinite(loss):
             raise FloatingPointError(f"Non-finite training loss: {float(loss.detach().cpu())}")
         loss.backward()
         value = float(loss.detach().cpu())
-        return ForwardBackwardOutput(loss=value, metrics={"loss": value})
+        return ForwardBackwardOutput(loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs)
 
     def forward_backward_custom(
         self,

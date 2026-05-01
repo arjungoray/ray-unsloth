@@ -8,6 +8,31 @@ regular Python, while `ray-unsloth` provides client facades for training,
 sampling, checkpointing, and Ray GPU placement. Unsloth owns the model loading,
 LoRA adapter setup, forward/backward passes, generation, and adapter saves.
 
+## Tinker Compatibility
+
+The package exposes both `ray_unsloth` and a lightweight `tinker` import alias.
+That means many SDK and cookbook examples can be used as-is after installing
+this repository in editable mode:
+
+```python
+import tinker
+
+service_client = tinker.ServiceClient(config="configs/example.yaml")
+training_client = await service_client.create_lora_training_client_async(
+    base_model="Qwen/Qwen3.5-4B",
+    rank=16,
+)
+tokenizer = training_client.get_tokenizer()
+```
+
+Cookbook-style `ModelInput(chunks=[...])`, `EncodedTextChunk`, image chunk
+placeholders, `TensorData.from_numpy(...)`, `TensorData.from_torch(...)`,
+`target_tokens`/`weights` cross-entropy data, synchronous tokenizer/info access,
+direct `await sampling_client.sample_async(...)`, and the common RL loss names
+`importance_sampling`, `ppo`, and `cispo` are supported. The main remaining edit
+for real Tinker examples is usually passing a local runtime config to
+`ServiceClient` so Ray/Modal/Unsloth know where to run.
+
 ## Quickstart
 
 Install the package for local development:
@@ -61,6 +86,21 @@ if generation is empty, punctuation-only, or missing the trained answer:
 python examples/overfit_smoke_test.py --config configs/example.yaml
 ```
 
+To run the official Tinker first-SFT tutorial as a full low-level primitive
+training loop against this implementation:
+
+```bash
+python examples/tinker_first_sft_training.py --config configs/example.yaml
+```
+
+To run the companion first-RL tutorial shape, which samples grouped math
+rollouts, scores boxed numerical answers, builds group-relative advantages, and
+updates with the `importance_sampling` policy loss:
+
+```bash
+python examples/tinker_first_rl_training.py --config configs/example.yaml
+```
+
 The default `configs/example.yaml` keeps Ray orchestration local and sends the
 Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
 adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests
@@ -102,8 +142,9 @@ python examples/sft_loop.py
 
 ## Roadmap
 
-- Broader loss support beyond cross entropy, including first-class RL losses
-  such as PPO, GRPO, DPO-style objectives, and reward-model-driven workflows.
+- Broader loss support beyond the current cross entropy, importance sampling,
+  PPO, and CISPO primitives, including DRO, GRPO, DPO-style objectives, and
+  reward-model-driven workflows.
 - Higher-level examples for multi-step SFT, evaluation, rollout collection, and
   policy optimization while keeping the low-level primitives available.
 - Stronger multi-actor orchestration, including multiple trainers, coordinated

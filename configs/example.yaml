@@ -113,6 +113,26 @@ resources:
   sampler_replicas: 1
   placement_strategy: PACK
 
+examples:
+  tinker_first_sft_training:
+    steps: 15
+    learning_rate: 0.0002
+    max_grad_norm: 1.0
+    max_length: 512
+    sample_tokens: 200
+    temperature: 0.7
+    stop: []
+    name: tinker-tinker-sft
+    max_final_loss_ratio: 1.02
+  tinker_first_rl_training:
+    steps: 10
+    batch_size: 4
+    group_size: 4
+    learning_rate: 0.00004
+    max_tokens: 128
+    temperature: 0.8
+    name: tinker-tinker-rl
+
 modal:
   enabled: true
   app_name: ray-unsloth

@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -6,7 +7,7 @@ from ray_unsloth.clients import service as service_module
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.service import ServiceClient
 from ray_unsloth.clients.training import TrainingClient
-from ray_unsloth.clients._remote import call
+from ray_unsloth.clients._remote import call, call_async
 from ray_unsloth.config import ModelConfig
 from ray_unsloth.runtime.modal import ModalActorHandle
 from ray_unsloth.types import (
@@ -16,24 +17,39 @@ from ray_unsloth.types import (
     OptimStepResult,
     SampleResponse,
     SaveWeightsForSamplerResponse,
+    TensorData,
 )
 
 
 class FakeTrainerActor:
     def __init__(self):
         self.metadata = None
+        self.saved_sampler_path = None
 
     def forward_backward(self, data, loss_fn="cross_entropy", loss_fn_config=None):
         assert loss_fn == "cross_entropy"
         assert loss_fn_config is None
-        return ForwardBackwardOutput(loss=1.25)
+        if "weights" in data[0].loss_fn_inputs:
+            assert data[0].loss_fn_inputs["weights"].tolist() == [0.0, 1.0]
+        return ForwardBackwardOutput(
+            loss=1.25,
+            loss_fn_outputs=[
+                {
+                    "logprobs": TensorData(
+                        data=[0.0, -1.25],
+                        dtype="float32",
+                        shape=[2],
+                    )
+                }
+            ],
+        )
 
     def optim_step(self, adam_params):
         assert isinstance(adam_params, AdamParams)
         return OptimStepResult(step=1)
 
     def save_weights_for_sampler(self, path=None):
-        del path
+        self.saved_sampler_path = path
         checkpoint = CheckpointRef(path="/tmp/sampler", step=1)
         return SaveWeightsForSamplerResponse(path=checkpoint.path, checkpoint=checkpoint)
 
@@ -110,6 +126,11 @@ class FakeModalRuntime:
             "kwargs": kwargs["kwargs"],
         }
 
+    async def invoke_async(self, **kwargs):
+        result = self.invoke(**kwargs)
+        result["async"] = True
+        return result
+
 
 def test_training_client_primitives_return_futures():
     client = TrainingClient(session_id="train", actor=FakeTrainerActor(), service=FakeService())
@@ -129,6 +150,64 @@ def test_training_client_async_aliases_and_create_sampling_client():
 
     assert isinstance(sampler, SamplingClient)
     assert service.model_path == "/tmp/sampler"
+
+
+def test_tinker_first_sft_training_primitive_loop_shape(monkeypatch):
+    """Exercise the official cookbook loop shape against the public clients."""
+
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+
+    async def run_loop():
+        service_client = ServiceClient(config={})
+        training_client = await service_client.create_lora_training_client_async(
+            base_model="Qwen/Qwen3.5-4B",
+            rank=16,
+        )
+        training_data = [
+            Datum(
+                model_input=ModelInput.from_ints([101, 102]),
+                loss_fn_inputs={
+                    "labels": TensorData(data=[-100, 102], dtype="int64", shape=[2]),
+                    "weights": TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+                },
+            )
+        ]
+        losses = []
+        for _step in range(2):
+            fwdbwd_future = await training_client.forward_backward_async(
+                training_data,
+                "cross_entropy",
+            )
+            optim_future = await training_client.optim_step_async(AdamParams(learning_rate=0.0002))
+            fwdbwd_result = await fwdbwd_future.result_async()
+            await optim_future.result_async()
+            logprobs = [
+                value
+                for output in fwdbwd_result.loss_fn_outputs
+                for value in output["logprobs"].tolist()
+            ]
+            weights = [
+                value
+                for datum in training_data
+                for value in datum.loss_fn_inputs["weights"].tolist()
+            ]
+            losses.append(-sum(lp * weight for lp, weight in zip(logprobs, weights)) / sum(weights))
+        sampling_client = await training_client.save_weights_and_get_sampling_client_async(
+            name="tinker-tinker-sft",
+        )
+        sample_future = await sampling_client.sample_async(
+            ModelInput.from_ints([101]),
+            num_samples=1,
+            sampling_params=SamplingParams(max_tokens=2, temperature=0.7),
+        )
+        sample = await sample_future.result_async()
+        return losses, sample, training_client
+
+    losses, sample, training_client = asyncio.run(run_loop())
+
+    assert losses == [1.25, 1.25]
+    assert sample.sequences[0].text == "trained"
+    assert training_client._actor.saved_sampler_path == "tinker-tinker-sft"
 
 
 def test_save_weights_and_get_sampling_client_reuses_training_actor():
@@ -233,6 +312,25 @@ def test_modal_actor_handle_matches_remote_call_shape():
     assert result["session_id"] == "train-1"
     assert result["method_name"] == "forward_backward"
     assert isinstance(result["args"][0][0], Datum)
+
+
+def test_modal_actor_handle_async_uses_async_invoke_shape():
+    actor = ModalActorHandle(
+        session=FakeModalRuntime(),
+        actor_kind="trainer",
+        session_id="train-1",
+        init_kwargs={"session_id": "train-1"},
+    )
+
+    async def run_call():
+        future = await call_async(actor, "forward_backward", [Datum(model_input=ModelInput.from_ints([1]))])
+        return await future.result_async()
+
+    result = asyncio.run(run_call())
+
+    assert result["async"] is True
+    assert result["actor_kind"] == "trainer"
+    assert result["method_name"] == "forward_backward"
 
 
 def test_modal_actor_handle_get_tokenizer_loads_locally(monkeypatch):
