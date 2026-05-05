@@ -40,6 +40,7 @@ class ModelConfig:
     fast_inference: bool = True
     gpu_memory_utilization: float = 0.85
     trust_remote_code: bool = True
+    device_map: Any | None = None
 
 
 @dataclass(slots=True)
@@ -85,6 +86,28 @@ class ResourceConfig:
 
 
 @dataclass(slots=True)
+class DistributedConfig:
+    enabled: bool = False
+    mode: str | None = None
+    num_nodes: int = 1
+    gpus_per_node: int = 1
+    backend: str = "nccl"
+    placement_strategy: str = "STRICT_PACK"
+
+    def validate(self) -> None:
+        if self.mode is not None:
+            self.enabled = True
+        if not self.enabled and self.mode is None:
+            return
+        if self.mode != "ddp":
+            raise ValueError("distributed.mode must be 'ddp' when distributed training is enabled.")
+        if self.num_nodes != 1:
+            raise ValueError("Phase 1 distributed training only supports distributed.num_nodes == 1.")
+        if self.gpus_per_node < 1:
+            raise ValueError("distributed.gpus_per_node must be at least 1.")
+
+
+@dataclass(slots=True)
 class ModalConfig:
     enabled: bool = False
     app_name: str = "ray-unsloth"
@@ -104,9 +127,13 @@ class RuntimeConfig:
     default_model_config: str | None = None
     model_configs: dict[str, ModelRuntimeConfig] = field(default_factory=dict)
     resources: ResourceConfig = field(default_factory=ResourceConfig)
+    distributed: DistributedConfig = field(default_factory=DistributedConfig)
     modal: ModalConfig = field(default_factory=ModalConfig)
     checkpoint_root: str = "checkpoints"
     supported_models: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.distributed.validate()
 
     @classmethod
     def from_file(cls, path: str | Path) -> "RuntimeConfig":
@@ -148,6 +175,7 @@ class RuntimeConfig:
             default_model_config=default_model_config,
             model_configs=model_configs,
             resources=ResourceConfig(**data.get("resources", {})),
+            distributed=DistributedConfig(**data.get("distributed", {})),
             modal=ModalConfig(**data.get("modal", {})),
             checkpoint_root=data.get("checkpoint_root", "checkpoints"),
             supported_models=list(data.get("supported_models", [])),

@@ -5,7 +5,7 @@ import torch
 
 from ray_unsloth.config import LoRAConfig, ModelConfig
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
-from ray_unsloth.types import Datum, ModelInput, SamplingParams, TensorData
+from ray_unsloth.types import AdamParams, Datum, ModelInput, SamplingParams, TensorData
 
 
 class FakeTokenizer:
@@ -40,6 +40,41 @@ class FakeModel:
         return SimpleNamespace(logits=logits)
 
 
+class FakeGenerateModel:
+    device = "cpu"
+
+    def __init__(self):
+        self.generate_kwargs = None
+        self.forward_input_ids = []
+        self.forward_attention_masks = []
+
+    def __call__(self, input_ids, attention_mask=None):
+        self.forward_input_ids.append(input_ids.detach().cpu().tolist())
+        self.forward_attention_masks.append(attention_mask.detach().cpu().tolist())
+        logits = torch.full((input_ids.shape[0], input_ids.shape[1], 100), -20.0)
+        logits[:, :, 11] = 0.0
+        logits[:, :, 12] = -5.0
+        return SimpleNamespace(logits=logits)
+
+    def generate(self, **kwargs):
+        self.generate_kwargs = kwargs
+        scores = []
+        for token in (11, 12):
+            score = torch.full((2, 100), -100.0)
+            score[:, 77] = 0.0
+            scores.append(score)
+        return SimpleNamespace(
+            sequences=torch.tensor(
+                [
+                    [10, 11, 11, 12],
+                    [10, 11, 12, 99],
+                ],
+                dtype=torch.long,
+            ),
+            scores=scores,
+        )
+
+
 class FakeFastLanguageModel:
     @staticmethod
     def for_inference(model):
@@ -61,6 +96,21 @@ class FakeLossModel:
         return SimpleNamespace(logits=logits)
 
 
+class TinyTrainablePolicyModel(torch.nn.Module):
+    @property
+    def device(self):
+        return self.token_logits.device
+
+    def __init__(self):
+        super().__init__()
+        self.token_logits = torch.nn.Parameter(torch.zeros(8))
+
+    def forward(self, input_ids, attention_mask=None):
+        del attention_mask
+        logits = self.token_logits.view(1, 1, -1).expand(input_ids.shape[0], input_ids.shape[1], -1)
+        return SimpleNamespace(logits=logits)
+
+
 def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp_path):
     calls = {}
 
@@ -77,7 +127,7 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
 
     monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
 
-    UnslothEngine(
+    engine = UnslothEngine(
         session_id="train-1",
         model_config=ModelConfig(
             base_model="LiquidAI/LFM2.5-1.2B-Instruct",
@@ -107,6 +157,7 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
     assert calls["from_pretrained"]["fast_inference"] is False
     assert calls["from_pretrained"]["gpu_memory_utilization"] == 0.75
     assert calls["from_pretrained"]["trust_remote_code"] is False
+    assert "device_map" not in calls["from_pretrained"]
     assert calls["get_peft_model"] == {
         "r": 16,
         "target_modules": ["q_proj", "k_proj", "v_proj", "out_proj", "in_proj", "w1", "w2", "w3"],
@@ -118,6 +169,72 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
         "use_rslora": True,
         "loftq_config": {"bits": 4},
     }
+
+
+def test_load_model_passes_configured_device_map(monkeypatch, tmp_path):
+    calls = {}
+
+    class LoadingFastLanguageModel:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            calls["from_pretrained"] = kwargs
+            return FakeModel(), FakeTokenizer()
+
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            calls["get_peft_model"] = kwargs
+            return model
+
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
+
+    UnslothEngine(
+        session_id="train-sharded",
+        model_config=ModelConfig(device_map="auto"),
+        lora_config=LoRAConfig(),
+        checkpoint_root=str(tmp_path),
+    )
+
+    assert calls["from_pretrained"]["device_map"] == "auto"
+
+
+def test_distributed_load_model_pins_device_map_to_local_rank(monkeypatch, tmp_path):
+    calls = {}
+
+    class LoadingFastLanguageModel:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            calls["from_pretrained"] = kwargs
+            return FakeModel(), FakeTokenizer()
+
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            calls["get_peft_model"] = kwargs
+            return model
+
+    class FakeDDP:
+        def __init__(self, module, **kwargs):
+            self.module = module
+            self.kwargs = kwargs
+
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.nn.parallel, "DistributedDataParallel", FakeDDP)
+
+    engine = UnslothEngine(
+        session_id="train-ddp",
+        model_config=ModelConfig(load_in_4bit=True),
+        lora_config=LoRAConfig(),
+        checkpoint_root=str(tmp_path),
+        rank=1,
+        local_rank=0,
+        world_size=2,
+        init_method="tcp://127.0.0.1:12345",
+    )
+
+    assert calls["from_pretrained"]["device_map"] == {"": 0}
+    assert isinstance(engine.model, FakeDDP)
+    assert engine.model.kwargs["broadcast_bucket_size"] == 25 * 1024 * 1024
 
 
 def test_sample_returns_generated_tokens_and_prompt_logprobs(monkeypatch):
@@ -147,6 +264,72 @@ def test_sample_returns_generated_tokens_and_prompt_logprobs(monkeypatch):
     assert engine.model.forward_input_ids[1] == [[10, 11, 11]]
     assert engine.model.forward_attention_masks[0] == [[1, 1]]
     assert engine.model.forward_attention_masks[1] == [[1, 1, 1]]
+
+
+def test_sample_uses_batched_generate_when_available(monkeypatch):
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=FakeFastLanguageModel))
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = FakeGenerateModel()
+    engine.tokenizer = FakeTokenizer()
+    engine._prompt_logprobs = lambda prompt_tokens, **kwargs: (None, None)
+
+    response = engine.sample(
+        ModelInput.from_ints([10, 11]),
+        num_samples=2,
+        sampling_params=SamplingParams(max_tokens=2, temperature=0.8, top_p=0.9, stop=["."]),
+    )
+
+    assert engine.model.generate_kwargs["num_return_sequences"] == 2
+    assert engine.model.generate_kwargs["max_new_tokens"] == 2
+    assert engine.model.generate_kwargs["temperature"] == 0.8
+    assert engine.model.generate_kwargs["top_p"] == 0.9
+    assert [sequence.tokens for sequence in response.sequences] == [[11], []]
+    assert response.sequences[0].stop_reason == "stop"
+    assert response.sequences[0].logprobs is not None
+    assert len(response.sequences[0].logprobs) == 1
+    assert response.sequences[0].logprobs[0] > -1.0
+    assert engine.model.forward_input_ids == [[[10, 11, 11], [10, 11, 0]]]
+    assert engine.model.forward_attention_masks == [[[1, 1, 1], [1, 1, 0]]]
+
+
+def test_optimizer_reuses_state_when_params_change():
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = torch.nn.Linear(2, 1)
+    engine.optimizer = None
+
+    optimizer = engine._ensure_optimizer(AdamParams(learning_rate=1e-4))
+    same_optimizer = engine._ensure_optimizer(AdamParams(learning_rate=2e-4, beta1=0.8, beta2=0.9))
+
+    assert same_optimizer is optimizer
+    assert same_optimizer.param_groups[0]["lr"] == 2e-4
+    assert same_optimizer.param_groups[0]["betas"] == (0.8, 0.9)
+
+
+def test_importance_sampling_backward_and_optim_step_increase_positive_advantage_logit(monkeypatch):
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=FakeFastLanguageModel))
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = TinyTrainablePolicyModel()
+    engine.tokenizer = FakeTokenizer()
+    engine.optimizer = None
+    engine.world_size = 1
+    engine.step = 0
+    datum = Datum(
+        model_input=ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": TensorData(data=[0, 3], dtype="int64", shape=[2]),
+            "logprobs": TensorData(data=[0.0, -2.0], dtype="float32", shape=[2]),
+            "advantages": TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+            "weights": TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+        },
+    )
+
+    before = float(engine.model.token_logits[3].detach())
+    engine.forward_backward([datum], loss_fn="importance_sampling")
+    result = engine.optim_step(AdamParams(learning_rate=0.1))
+    after = float(engine.model.token_logits[3].detach())
+
+    assert result.step == 1
+    assert after > before
 
 
 def test_cross_entropy_accepts_tinker_target_tokens_and_weights():

@@ -4,7 +4,7 @@ ray:
   ignore_reinit_error: true
 
 model:
-  config: lfm2.5-1.2b-instruct
+  config: qwen3.5-9b-instruct
 
 lora:
   rank: 8
@@ -104,6 +104,33 @@ model_configs:
       bias: none
       use_gradient_checkpointing: unsloth
       loftq_config: null
+  qwen3.5-9b-instruct:
+    model:
+      base_model: unsloth/Qwen3.5-9B
+      max_seq_length: 2048
+      dtype: bfloat16
+      load_in_4bit: false
+      fast_inference: false
+      gpu_memory_utilization: 0.85
+      trust_remote_code: true
+      device_map: auto
+    lora:
+      rank: 16
+      alpha: 16
+      dropout: 0.0
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - o_proj
+        - gate_proj
+        - up_proj
+        - down_proj
+      random_state: 3407
+      use_rslora: false
+      bias: none
+      use_gradient_checkpointing: unsloth
+      loftq_config: null
 
 resources:
   trainer_num_gpus: 0.0
@@ -140,11 +167,35 @@ examples:
     max_tokens: 128
     temperature: 0.8
     name: tinker-tinker-rl
+  qwen3_5_9b_rl_training:
+    steps: 25
+    batch_size: 2
+    group_size: 4
+    learning_rate: 0.00004
+    max_tokens: 96
+    temperature: 0.8
+    top_p: 0.95
+    exploration_temperature: 1.0
+    exploration_top_p: 0.95
+    min_train_datums: 1
+    sft_anchor_weight: 0.2
+    name: qwen3.5-9b-rl
+    wandb:
+      enabled: true
+      project: ray-unsloth-rl
+      name: qwen3.5-9b-2xl4-rl
+      tags:
+        - rl
+        - qwen3.5
+        - lora
+        - 2xl4
+        - model-sharded
+      log_completions: 64
 
 modal:
   enabled: true
   app_name: ray-unsloth
-  gpu: L4
+  gpu: L4:2
   timeout: 1800
   scaledown_window: 300
   volume_name: ray-unsloth-checkpoints
@@ -156,3 +207,4 @@ supported_models:
   - gemma4-e2b-it
   - lfm2.5-1.2b-instruct
   - qwen3.5-4b
+  - qwen3.5-9b-instruct

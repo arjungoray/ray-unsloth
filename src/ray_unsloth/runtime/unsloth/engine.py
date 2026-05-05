@@ -61,24 +61,108 @@ class UnslothEngine:
         model_path: str | None = None,
         with_optimizer: bool = False,
         metadata: dict[str, Any] | None = None,
+        rank: int = 0,
+        local_rank: int = 0,
+        world_size: int = 1,
+        backend: str = "nccl",
+        init_method: str | None = None,
     ) -> None:
         self.session_id = session_id
         self.model_config = model_config
         self.lora_config = lora_config
         self.checkpoint_root = checkpoint_root
         self.metadata = dict(metadata or {})
+        self.rank = rank
+        self.local_rank = local_rank
+        self.world_size = world_size
+        self.backend = backend
+        self.init_method = init_method
         self.step = 0
         self.optimizer = None
         self._custom_losses: dict[str, CustomLoss] = {}
 
+        self._setup_distributed()
         self.model, self.tokenizer = self._load_model(model_path=model_path)
+        self._wrap_distributed_model()
         if model_path:
             self.load_state(model_path, with_optimizer=with_optimizer)
+
+    @property
+    def is_distributed(self) -> bool:
+        return self.world_size > 1
+
+    @property
+    def is_rank0(self) -> bool:
+        return self.rank == 0
+
+    def _setup_distributed(self) -> None:
+        if not self.is_distributed:
+            return
+        if self.init_method is None:
+            raise ValueError("init_method is required when world_size > 1.")
+        import torch
+        import torch.distributed as dist
+
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.local_rank)
+        if not dist.is_initialized():
+            dist.init_process_group(
+                backend=self.backend,
+                init_method=self.init_method,
+                rank=self.rank,
+                world_size=self.world_size,
+            )
+
+    def _wrap_distributed_model(self) -> None:
+        if not self.is_distributed:
+            return
+        import torch
+        from torch.nn.parallel import DistributedDataParallel
+
+        device_ids = [self.local_rank] if torch.cuda.is_available() else None
+        output_device = self.local_rank if torch.cuda.is_available() else None
+        self.model = DistributedDataParallel(
+            self.model,
+            device_ids=device_ids,
+            output_device=output_device,
+            find_unused_parameters=True,
+            broadcast_bucket_size=25 * 1024 * 1024,
+        )
+
+    def _unwrap_model(self):
+        return getattr(self.model, "module", self.model)
+
+    def _model_device(self):
+        import torch
+
+        model = self._unwrap_model()
+        device = getattr(model, "device", None)
+        if device is not None:
+            return device
+        try:
+            return next(model.parameters()).device
+        except StopIteration:
+            return torch.device("cuda", self.local_rank) if torch.cuda.is_available() else torch.device("cpu")
+
+    def _barrier(self) -> None:
+        if not self.is_distributed:
+            return
+        import torch.distributed as dist
+
+        if dist.is_initialized():
+            dist.barrier()
 
     def _load_model(self, model_path: str | None = None):
         from unsloth import FastLanguageModel
 
         model_name = self.model_config.base_model
+        loader_kwargs: dict[str, Any] = {}
+        if self.model_config.device_map is not None:
+            loader_kwargs["device_map"] = self.model_config.device_map
+        elif self.is_distributed:
+            # Each Ray DDP worker gets exactly one visible GPU, so local ordinal
+            # zero is the only valid CUDA device inside the worker process.
+            loader_kwargs["device_map"] = {"": self.local_rank}
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_name,
             max_seq_length=self.model_config.max_seq_length,
@@ -87,6 +171,7 @@ class UnslothEngine:
             fast_inference=self.model_config.fast_inference,
             gpu_memory_utilization=self.model_config.gpu_memory_utilization,
             trust_remote_code=self.model_config.trust_remote_code,
+            **loader_kwargs,
         )
         model = FastLanguageModel.get_peft_model(
             model,
@@ -124,7 +209,13 @@ class UnslothEngine:
     def _ensure_optimizer(self, params: AdamParams | None = None):
         import torch
 
-        if self.optimizer is not None and params is None:
+        if self.optimizer is not None:
+            if params is not None:
+                for group in self.optimizer.param_groups:
+                    group["lr"] = params.learning_rate
+                    group["betas"] = params.betas
+                    group["eps"] = params.eps
+                    group["weight_decay"] = params.weight_decay
             return self.optimizer
         params = params or AdamParams(learning_rate=2e-5)
         self.optimizer = torch.optim.AdamW(
@@ -149,8 +240,8 @@ class UnslothEngine:
         padded = [tokens + [pad_token_id] * (max_len - len(tokens)) for tokens in input_ids]
         attention = [[1] * len(tokens) + [0] * (max_len - len(tokens)) for tokens in input_ids]
         return {
-            "input_ids": torch.tensor(padded, dtype=torch.long, device=self.model.device),
-            "attention_mask": torch.tensor(attention, dtype=torch.long, device=self.model.device),
+            "input_ids": torch.tensor(padded, dtype=torch.long, device=self._model_device()),
+            "attention_mask": torch.tensor(attention, dtype=torch.long, device=self._model_device()),
         }
 
     def _loss_tensor_data(self, raw: Any) -> list[Any]:
@@ -335,7 +426,7 @@ class UnslothEngine:
 
         if len(tokens) < 2:
             return [None] * len(tokens)
-        input_ids = torch.tensor([tokens], dtype=torch.long, device=self.model.device)
+        input_ids = torch.tensor([tokens], dtype=torch.long, device=self._model_device())
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids)
             log_probs = outputs.logits[:, :-1, :].log_softmax(dim=-1)
@@ -351,7 +442,7 @@ class UnslothEngine:
         import torch
         from unsloth import FastLanguageModel
 
-        FastLanguageModel.for_inference(self.model)
+        FastLanguageModel.for_inference(self._unwrap_model())
         with torch.no_grad():
             if loss_fn == "cross_entropy":
                 loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
@@ -373,7 +464,7 @@ class UnslothEngine:
         import torch
         from unsloth import FastLanguageModel
 
-        FastLanguageModel.for_training(self.model)
+        FastLanguageModel.for_training(self._unwrap_model())
         self._ensure_optimizer()
         if loss_fn == "cross_entropy":
             loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
@@ -389,7 +480,8 @@ class UnslothEngine:
             raise UnsupportedLossError(f"Unsupported loss '{loss_fn}'.")
         if not torch.isfinite(loss):
             raise FloatingPointError(f"Non-finite training loss: {float(loss.detach().cpu())}")
-        loss.backward()
+        backward_loss = loss * self.world_size if self.is_distributed else loss
+        backward_loss.backward()
         value = float(loss.detach().cpu())
         return ForwardBackwardOutput(loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs)
 
@@ -401,7 +493,7 @@ class UnslothEngine:
     ) -> ForwardBackwardOutput:
         from unsloth import FastLanguageModel
 
-        FastLanguageModel.for_training(self.model)
+        FastLanguageModel.for_training(self._unwrap_model())
         batch = self._batch_from_data(data)
         outputs = self.model(**batch)
         if isinstance(loss_fn, str):
@@ -411,7 +503,8 @@ class UnslothEngine:
         else:
             callable_loss = loss_fn
         loss, metrics = callable_loss(outputs, data, loss_fn_config or {})
-        loss.backward()
+        backward_loss = loss * self.world_size if self.is_distributed else loss
+        backward_loss.backward()
         value = float(loss.detach().cpu())
         metrics = {"loss": value, **{key: float(item) for key, item in metrics.items()}}
         return ForwardBackwardOutput(loss=value, metrics=metrics)
@@ -443,14 +536,14 @@ class UnslothEngine:
         import torch
         from unsloth import FastLanguageModel
 
-        FastLanguageModel.for_inference(self.model)
+        FastLanguageModel.for_inference(self._unwrap_model())
         sampling_params = sampling_params or SamplingParams()
         prompt_tokens = prompt.to_ints() if isinstance(prompt, ModelInput) else list(prompt)
         stop_token_ids = self._stop_token_ids(sampling_params.stop)
         if sampling_params.seed is not None:
             torch.manual_seed(sampling_params.seed)
 
-        generated_outputs = self._generate_with_forward_loop(
+        generated_outputs = self._generate(
             prompt_tokens=prompt_tokens,
             num_samples=num_samples,
             sampling_params=sampling_params,
@@ -479,6 +572,123 @@ class UnslothEngine:
             topk_prompt_logprobs=topk,
         )
 
+    def _generate(
+        self,
+        *,
+        prompt_tokens: list[int],
+        num_samples: int,
+        sampling_params: SamplingParams,
+        stop_token_ids: list[list[int]],
+    ) -> list[tuple[list[int], list[float | None], str]]:
+        if hasattr(self._unwrap_model(), "generate"):
+            try:
+                return self._generate_with_transformers_generate(
+                    prompt_tokens=prompt_tokens,
+                    num_samples=num_samples,
+                    sampling_params=sampling_params,
+                    stop_token_ids=stop_token_ids,
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
+        return self._generate_with_forward_loop(
+            prompt_tokens=prompt_tokens,
+            num_samples=num_samples,
+            sampling_params=sampling_params,
+            stop_token_ids=stop_token_ids,
+        )
+
+    def _generate_with_transformers_generate(
+        self,
+        *,
+        prompt_tokens: list[int],
+        num_samples: int,
+        sampling_params: SamplingParams,
+        stop_token_ids: list[list[int]],
+    ) -> list[tuple[list[int], list[float | None], str]]:
+        import torch
+
+        model = self._unwrap_model()
+        device = self._model_device()
+        input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
+        attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+
+        kwargs: dict[str, Any] = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "max_new_tokens": sampling_params.max_tokens,
+            "num_return_sequences": num_samples,
+            "do_sample": sampling_params.temperature > 0,
+            "return_dict_in_generate": True,
+            "output_scores": True,
+            "pad_token_id": pad_token_id,
+        }
+        if sampling_params.temperature > 0:
+            kwargs["temperature"] = sampling_params.temperature
+            kwargs["top_p"] = sampling_params.top_p
+            if sampling_params.top_k is not None:
+                kwargs["top_k"] = sampling_params.top_k
+        if self.tokenizer.eos_token_id is not None:
+            kwargs["eos_token_id"] = self.tokenizer.eos_token_id
+        if sampling_params.seed is not None:
+            torch.manual_seed(sampling_params.seed)
+
+        with torch.no_grad():
+            generated = model.generate(**kwargs)
+
+        sequences = generated.sequences.detach().cpu().tolist()
+        outputs = []
+        prompt_length = len(prompt_tokens)
+        for row_index, sequence in enumerate(sequences):
+            completion_tokens = list(sequence[prompt_length:])
+            finish_reason = self._finish_reason(completion_tokens, sampling_params.max_tokens)
+            trimmed_tokens, stop_reason = self._trim_at_first_stop(completion_tokens, stop_token_ids)
+            if stop_reason is not None:
+                finish_reason = stop_reason
+            outputs.append((trimmed_tokens, [], finish_reason))
+        logprob_rows = self._completion_logprobs_batch(prompt_tokens, [tokens for tokens, _logprobs, _reason in outputs])
+        return [
+            (tokens, logprobs, finish_reason)
+            for (tokens, _empty_logprobs, finish_reason), logprobs in zip(outputs, logprob_rows)
+        ]
+
+    def _completion_logprobs_batch(
+        self,
+        prompt_tokens: list[int],
+        completion_rows: list[list[int]],
+    ) -> list[list[float | None]]:
+        import torch
+
+        if not completion_rows:
+            return []
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id or 0
+        full_rows = [prompt_tokens + completion for completion in completion_rows]
+        max_len = max(len(tokens) for tokens in full_rows)
+        padded = [tokens + [pad_token_id] * (max_len - len(tokens)) for tokens in full_rows]
+        attention = [[1] * len(tokens) + [0] * (max_len - len(tokens)) for tokens in full_rows]
+        input_ids = torch.tensor(padded, dtype=torch.long, device=self._model_device())
+        attention_mask = torch.tensor(attention, dtype=torch.long, device=self._model_device())
+        with torch.no_grad():
+            model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            log_probs = model_outputs.logits.log_softmax(dim=-1)
+
+        prompt_len = len(prompt_tokens)
+        rows: list[list[float | None]] = []
+        for row_index, completion in enumerate(completion_rows):
+            values: list[float | None] = []
+            for token_index, token in enumerate(completion):
+                logit_index = prompt_len + token_index - 1
+                if logit_index < 0:
+                    values.append(None)
+                else:
+                    values.append(float(log_probs[row_index, logit_index, int(token)].detach().cpu()))
+            rows.append(values)
+        return rows
+
     def _generate_with_forward_loop(
         self,
         *,
@@ -497,8 +707,8 @@ class UnslothEngine:
             finish_reason: str | None = None
 
             for _step in range(sampling_params.max_tokens):
-                input_ids = torch.tensor([context], dtype=torch.long, device=self.model.device)
-                attention_mask = torch.tensor([[1] * len(context)], dtype=torch.long, device=self.model.device)
+                input_ids = torch.tensor([context], dtype=torch.long, device=self._model_device())
+                attention_mask = torch.tensor([[1] * len(context)], dtype=torch.long, device=self._model_device())
                 with torch.no_grad():
                     model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
                 logits = model_outputs.logits[:, -1, :].squeeze(0).float()
@@ -609,6 +819,14 @@ class UnslothEngine:
                 return tokens[: -len(stop)], "stop"
         return tokens, None
 
+    def _trim_at_first_stop(self, tokens: list[int], stop_token_ids: list[list[int]]) -> tuple[list[int], str | None]:
+        for end_index in range(1, len(tokens) + 1):
+            prefix = tokens[:end_index]
+            trimmed, reason = self._trim_stop_tokens(prefix, stop_token_ids)
+            if reason is not None:
+                return trimmed, reason
+        return tokens, None
+
     def _finish_reason(self, tokens: list[int], max_tokens: int) -> str:
         eos_token_id = self.tokenizer.eos_token_id
         if tokens and eos_token_id is not None and tokens[-1] == eos_token_id:
@@ -649,7 +867,7 @@ class UnslothEngine:
             empty_logprobs = [None] * len(prompt_tokens) if include_prompt_logprobs else None
             empty_topk = [[] for _ in prompt_tokens] if topk_prompt_logprobs > 0 else None
             return empty_logprobs, empty_topk
-        input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self.model.device)
+        input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=self._model_device())
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids)
             log_probs = outputs.logits[:, :-1, :].log_softmax(dim=-1).squeeze(0)
@@ -670,7 +888,7 @@ class UnslothEngine:
         import torch
 
         with atomic_checkpoint_dir(target) as tmp_dir:
-            self.model.save_pretrained(str(tmp_dir))
+            self._unwrap_model().save_pretrained(str(tmp_dir))
             self.tokenizer.save_pretrained(str(tmp_dir))
             if include_optimizer:
                 optimizer = self._ensure_optimizer()
@@ -692,29 +910,51 @@ class UnslothEngine:
 
     def save_state(self, path: str | None = None, include_optimizer: bool = False) -> CheckpointRef:
         target = resolve_path(path) if path else new_checkpoint_path(self.checkpoint_root, "state", self.step)
-        return self._save_weights(target, include_optimizer=include_optimizer, kind="training_state")
+        checkpoint = None
+        try:
+            if self.is_rank0:
+                checkpoint = self._save_weights(target, include_optimizer=include_optimizer, kind="training_state")
+        finally:
+            self._barrier()
+        return checkpoint
 
     def load_state(self, path: str, with_optimizer: bool = False) -> None:
         import torch
+        import torch.distributed as dist
 
-        manifest = read_manifest(path)
+        manifest = read_manifest(path) if self.is_rank0 else None
+        if self.is_distributed:
+            values = [manifest]
+            dist.broadcast_object_list(values, src=0)
+            manifest = values[0]
+        if manifest is None:
+            raise RuntimeError("Rank 0 did not provide checkpoint manifest.")
         self.step = int(manifest.get("step", 0))
         resolved = resolve_path(path)
         adapter_name = f"ray_unsloth_step_{self.step}"
-        self.model.load_adapter(str(resolved), adapter_name=adapter_name, is_trainable=True)
-        if hasattr(self.model, "set_adapter"):
-            self.model.set_adapter(adapter_name)
+        model = self._unwrap_model()
+        model.load_adapter(str(resolved), adapter_name=adapter_name, is_trainable=True)
+        if hasattr(model, "set_adapter"):
+            model.set_adapter(adapter_name)
         optimizer_path = resolved / "optimizer.pt"
         if with_optimizer:
             if not optimizer_path.exists():
                 raise FileNotFoundError(f"Checkpoint does not include optimizer state: {optimizer_path}")
             optimizer = self._ensure_optimizer()
-            optimizer.load_state_dict(torch.load(optimizer_path, map_location=self.model.device))
+            optimizer.load_state_dict(torch.load(optimizer_path, map_location=self._model_device()))
+        self._barrier()
 
     def load_state_with_optimizer(self, path: str) -> None:
         self.load_state(path, with_optimizer=True)
 
     def save_weights_for_sampler(self, path: str | None = None) -> SaveWeightsForSamplerResponse:
         target = resolve_path(path) if path else new_checkpoint_path(self.checkpoint_root, "sampler", self.step)
-        checkpoint = self._save_weights(target, include_optimizer=False, kind="sampler_weights")
+        checkpoint = None
+        try:
+            if self.is_rank0:
+                checkpoint = self._save_weights(target, include_optimizer=False, kind="sampler_weights")
+        finally:
+            self._barrier()
+        if checkpoint is None:
+            return None
         return SaveWeightsForSamplerResponse(path=checkpoint.path, checkpoint=checkpoint)

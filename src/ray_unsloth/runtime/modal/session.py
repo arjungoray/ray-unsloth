@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -34,7 +35,84 @@ def _actor_kwargs(init_kwargs: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in init_kwargs.items()
-        if key not in {"volume_name", "volume_mount_path"}
+        if key not in {"volume_name", "volume_mount_path", "distributed_config"}
+    }
+
+
+def _visible_gpu_count() -> int | None:
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible:
+        return len([device for device in visible.split(",") if device.strip()])
+    try:
+        import torch
+
+        return int(torch.cuda.device_count())
+    except Exception:
+        return None
+
+
+def _init_modal_local_ray(init_kwargs: dict[str, Any]):
+    try:
+        import ray
+    except ImportError as exc:
+        raise RayUnavailableError("Ray is required for Modal DDP orchestration.") from exc
+    if not ray.is_initialized():
+        ray.init(
+            namespace="ray-unsloth-modal",
+            ignore_reinit_error=True,
+        )
+    return ray
+
+
+def _create_modal_distributed_trainer(init_kwargs: dict[str, Any]):
+    from ray_unsloth.runtime.ray.distributed_trainer import (
+        DistributedTrainerCoordinator,
+        DistributedTrainerWorkerActor,
+    )
+
+    distributed = init_kwargs["distributed_config"]
+    visible_count = _visible_gpu_count()
+    if visible_count is not None and visible_count < distributed.gpus_per_node:
+        raise RuntimeError(
+            "Modal DDP requested "
+            f"{distributed.gpus_per_node} GPU(s), but only {visible_count} are visible in the container."
+        )
+    ray = _init_modal_local_ray(init_kwargs)
+    workers = []
+    for rank in range(distributed.gpus_per_node):
+        workers.append(
+            DistributedTrainerWorkerActor.options(
+                num_gpus=1,
+                num_cpus=1,
+            ).remote(
+                session_id=init_kwargs["session_id"],
+                model_config=init_kwargs["model_config"],
+                lora_config=init_kwargs["lora_config"],
+                checkpoint_root=init_kwargs["checkpoint_root"],
+                rank=rank,
+                world_size=distributed.gpus_per_node,
+                backend=distributed.backend,
+                model_path=init_kwargs.get("model_path"),
+                with_optimizer=bool(init_kwargs.get("with_optimizer", False)),
+                metadata=init_kwargs.get("metadata") or {},
+            )
+        )
+    init_method = ray.get(workers[0].get_process_group_endpoint.remote())
+    ray.get([worker.initialize.remote(init_method) for worker in workers])
+    return DistributedTrainerCoordinator(workers=workers, world_size=distributed.gpus_per_node)
+
+
+def _modal_function_kwargs(config: RuntimeConfig, image, volume) -> dict[str, Any]:
+    modal_config = config.modal
+    return {
+        "image": image,
+        "gpu": modal_config.gpu,
+        "timeout": modal_config.timeout,
+        "scaledown_window": modal_config.scaledown_window,
+        "volumes": {modal_config.volume_mount_path: volume},
+        # The runtime stores actors in container memory. Keep one warm container
+        # so training, sampling, save, and optimizer calls hit the same actor.
+        "max_containers": 1,
     }
 
 
@@ -52,7 +130,10 @@ def _modal_invoke_impl(
     actor = _ENGINE_REGISTRY.get(key)
     if actor is None:
         _sync_modal_volume(init_kwargs, "reload")
-        if actor_kind == "trainer":
+        distributed_config = init_kwargs.get("distributed_config")
+        if actor_kind == "trainer" and getattr(distributed_config, "enabled", False):
+            actor = _create_modal_distributed_trainer(init_kwargs)
+        elif actor_kind == "trainer":
             from ray_unsloth.runtime.ray.trainer_actor import TrainerActorImpl
 
             actor = TrainerActorImpl(**_actor_kwargs(init_kwargs))
@@ -201,13 +282,7 @@ class ModalSession:
             image = image.env({"HF_HOME": "/model_cache", "PYTHONPATH": "/root/ray_unsloth_src"})
 
         volume = modal.Volume.from_name(modal_config.volume_name, create_if_missing=True)
-        function_kwargs = {
-            "image": image,
-            "gpu": modal_config.gpu,
-            "timeout": modal_config.timeout,
-            "scaledown_window": modal_config.scaledown_window,
-            "volumes": {modal_config.volume_mount_path: volume},
-        }
+        function_kwargs = _modal_function_kwargs(self.config, image, volume)
         return app, app.function(**function_kwargs)(_modal_invoke_impl)
 
     def _start_app(self) -> None:
@@ -280,6 +355,7 @@ class ModalSession:
             "model_path": model_path,
             "with_optimizer": with_optimizer,
             "metadata": metadata or {},
+            "distributed_config": self.config.distributed,
             "volume_name": self.config.modal.volume_name,
             "volume_mount_path": self.config.modal.volume_mount_path,
         }

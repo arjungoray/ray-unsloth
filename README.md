@@ -101,6 +101,19 @@ updates with the `importance_sampling` policy loss:
 python examples/tinker_first_rl_training.py --config configs/example.yaml
 ```
 
+To run the same RL loop on Qwen3.5 9B with model-sharded training across two
+Modal L4 GPUs:
+
+```bash
+python examples/qwen3_5_9b_rl_training.py --config configs/qwen3_5_9b_2x_l4_sharded.yaml
+```
+
+That Qwen RL example samples directly from the live training actor, so it does
+not checkpoint before every rollout. It logs immediate progress phases plus
+rewards, advantages, policy summaries, timing, and completion tables to Weights
+& Biases by default. Install and authenticate W&B locally before running, or set
+`examples.qwen3_5_9b_rl_training.wandb.enabled` to `false` in the config.
+
 The default `configs/example.yaml` keeps Ray orchestration local and sends the
 Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
 adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests

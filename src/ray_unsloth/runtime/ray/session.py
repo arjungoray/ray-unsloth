@@ -8,6 +8,10 @@ from typing import Any
 
 from ray_unsloth.config import LoRAConfig, ModelConfig, RuntimeConfig
 from ray_unsloth.errors import RayUnavailableError
+from ray_unsloth.runtime.ray.distributed_trainer import (
+    DistributedTrainerCoordinatorActor,
+    DistributedTrainerWorkerActor,
+)
 from ray_unsloth.runtime.ray.sampler_actor import SamplerActor
 from ray_unsloth.runtime.ray.trainer_actor import TrainerActor
 
@@ -37,6 +41,8 @@ class RaySession:
         return ray
 
     def _create_placement_group(self) -> None:
+        if self.config.distributed.enabled:
+            return
         resources = self.config.resources
         total_bundles = 1 + max(resources.sampler_replicas, 0)
         bundles = [
@@ -60,15 +66,39 @@ class RaySession:
         except Exception:
             self._placement_group = None
 
-    def _strategy(self, bundle_index: int):
-        if self._placement_group is None:
+    def _strategy(self, bundle_index: int, placement_group=None):
+        placement_group = placement_group or self._placement_group
+        if placement_group is None:
             return None
         from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
         return PlacementGroupSchedulingStrategy(
-            placement_group=self._placement_group,
+            placement_group=placement_group,
             placement_group_bundle_index=bundle_index,
         )
+
+    def _create_distributed_placement_group(self, session_id: str):
+        from ray.util.placement_group import placement_group
+
+        resources = self.config.resources
+        distributed = self.config.distributed
+        bundles = [
+            {"CPU": max(resources.trainer_num_cpus, 0.001)},
+            *[
+                {
+                    "GPU": 1,
+                    "CPU": max(resources.trainer_num_cpus, 0.001),
+                }
+                for _ in range(distributed.gpus_per_node)
+            ],
+        ]
+        group = placement_group(
+            bundles,
+            strategy=distributed.placement_strategy,
+            name=f"ray-unsloth-ddp-{session_id[-8:]}",
+        )
+        self._ray.get(group.ready(), timeout=120)
+        return group
 
     def create_training_actor(
         self,
@@ -89,6 +119,18 @@ class RaySession:
             seed=seed,
             target_modules=target_modules,
         )
+        if self.config.distributed.enabled:
+            actor = self._create_distributed_training_actor(
+                session_id=session_id,
+                model_config=model_config,
+                lora_config=lora_config,
+                model_path=model_path,
+                with_optimizer=with_optimizer,
+                metadata=metadata or {},
+            )
+            self.training_actors[session_id] = actor
+            return session_id, actor
+
         options = {
             "num_gpus": self.config.resources.trainer_num_gpus,
             "num_cpus": self.config.resources.trainer_num_cpus,
@@ -107,6 +149,51 @@ class RaySession:
         )
         self.training_actors[session_id] = actor
         return session_id, actor
+
+    def _create_distributed_training_actor(
+        self,
+        *,
+        session_id: str,
+        model_config: ModelConfig,
+        lora_config: LoRAConfig,
+        model_path: str | None,
+        with_optimizer: bool,
+        metadata: dict[str, Any],
+    ) -> Any:
+        distributed = self.config.distributed
+        group = self._create_distributed_placement_group(session_id)
+        workers = []
+        for rank in range(distributed.gpus_per_node):
+            options = {
+                "num_gpus": 1,
+                "num_cpus": self.config.resources.trainer_num_cpus,
+                "scheduling_strategy": self._strategy(rank + 1, group),
+            }
+            workers.append(
+                DistributedTrainerWorkerActor.options(**options).remote(
+                    session_id=session_id,
+                    model_config=model_config,
+                    lora_config=lora_config,
+                    checkpoint_root=self.config.checkpoint_root,
+                    rank=rank,
+                    world_size=distributed.gpus_per_node,
+                    backend=distributed.backend,
+                    model_path=model_path,
+                    with_optimizer=with_optimizer,
+                    metadata=metadata,
+                )
+            )
+        init_method = self._ray.get(workers[0].get_process_group_endpoint.remote())
+        self._ray.get([worker.initialize.remote(init_method) for worker in workers])
+        coordinator_options = {
+            "num_gpus": 0,
+            "num_cpus": self.config.resources.trainer_num_cpus,
+            "scheduling_strategy": self._strategy(0, group),
+        }
+        return DistributedTrainerCoordinatorActor.options(**coordinator_options).remote(
+            workers=workers,
+            world_size=distributed.gpus_per_node,
+        )
 
     def create_sampler_actors(
         self,
