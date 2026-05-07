@@ -434,6 +434,8 @@ class SamplingParams:
     top_k: int | None = None
     stop: list[str] = field(default_factory=list)
     seed: int | None = None
+    max_time: float | None = None
+    logprobs_max_tokens: int | None = None
 
 
 @dataclass(slots=True, init=False)

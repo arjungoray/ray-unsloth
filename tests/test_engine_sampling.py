@@ -96,6 +96,22 @@ class FakeLossModel:
         return SimpleNamespace(logits=logits)
 
 
+class LogitsToKeepLossModel:
+    device = "cpu"
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, input_ids, attention_mask=None, logits_to_keep=None):
+        del attention_mask
+        self.calls.append({"input_shape": tuple(input_ids.shape), "logits_to_keep": logits_to_keep})
+        keep = int(logits_to_keep or input_ids.shape[1])
+        logits = torch.full((input_ids.shape[0], keep, 8), -10.0)
+        logits[:, :, 3] = 0.0
+        logits[:, :, 4] = -0.5
+        return SimpleNamespace(logits=logits)
+
+
 class TinyTrainablePolicyModel(torch.nn.Module):
     @property
     def device(self):
@@ -136,6 +152,7 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
             fast_inference=False,
             gpu_memory_utilization=0.75,
             trust_remote_code=False,
+            attn_implementation="sdpa",
         ),
         lora_config=LoRAConfig(
             rank=16,
@@ -157,6 +174,7 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
     assert calls["from_pretrained"]["fast_inference"] is False
     assert calls["from_pretrained"]["gpu_memory_utilization"] == 0.75
     assert calls["from_pretrained"]["trust_remote_code"] is False
+    assert calls["from_pretrained"]["attn_implementation"] == "sdpa"
     assert "device_map" not in calls["from_pretrained"]
     assert calls["get_peft_model"] == {
         "r": 16,
@@ -276,20 +294,48 @@ def test_sample_uses_batched_generate_when_available(monkeypatch):
     response = engine.sample(
         ModelInput.from_ints([10, 11]),
         num_samples=2,
-        sampling_params=SamplingParams(max_tokens=2, temperature=0.8, top_p=0.9, stop=["."]),
+        sampling_params=SamplingParams(max_tokens=2, temperature=0.8, top_p=0.9, stop=["."], max_time=12.5),
     )
 
     assert engine.model.generate_kwargs["num_return_sequences"] == 2
     assert engine.model.generate_kwargs["max_new_tokens"] == 2
     assert engine.model.generate_kwargs["temperature"] == 0.8
     assert engine.model.generate_kwargs["top_p"] == 0.9
+    assert engine.model.generate_kwargs["max_time"] == 12.5
+    assert engine.model.generate_kwargs["output_scores"] is False
     assert [sequence.tokens for sequence in response.sequences] == [[11], []]
     assert response.sequences[0].stop_reason == "stop"
     assert response.sequences[0].logprobs is not None
     assert len(response.sequences[0].logprobs) == 1
     assert response.sequences[0].logprobs[0] > -1.0
-    assert engine.model.forward_input_ids == [[[10, 11, 11], [10, 11, 0]]]
-    assert engine.model.forward_attention_masks == [[[1, 1, 1], [1, 1, 0]]]
+    assert engine.model.forward_input_ids == [[[10, 11, 11]]]
+    assert engine.model.forward_attention_masks == [[[1, 1, 1]]]
+
+
+def test_sample_caps_logprob_recompute_tokens_when_requested(monkeypatch):
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=FakeFastLanguageModel))
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = FakeGenerateModel()
+    engine.tokenizer = FakeTokenizer()
+    engine._prompt_logprobs = lambda prompt_tokens, **kwargs: (None, None)
+
+    response = engine.sample(
+        ModelInput.from_ints([10, 11]),
+        num_samples=2,
+        sampling_params=SamplingParams(
+            max_tokens=2,
+            temperature=0.8,
+            top_p=0.9,
+            stop=[],
+            logprobs_max_tokens=1,
+        ),
+    )
+
+    assert [sequence.tokens for sequence in response.sequences] == [[11, 12], [12, 99]]
+    assert [len(sequence.logprobs or []) for sequence in response.sequences] == [1, 1]
+    assert engine.model.generate_kwargs["output_scores"] is True
+    assert engine.model.forward_input_ids == []
+    assert engine.model.forward_attention_masks == []
 
 
 def test_optimizer_reuses_state_when_params_change():
@@ -371,3 +417,26 @@ def test_policy_loss_returns_logprobs_and_ratios():
     assert torch.isfinite(loss)
     assert loss_outputs[0]["logprobs"].tolist()[1] < 0.0
     assert loss_outputs[0]["ratios"].tolist()[1] > 0.0
+
+
+def test_policy_loss_uses_logits_to_keep_for_completion_suffix():
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = LogitsToKeepLossModel()
+    engine.tokenizer = FakeTokenizer()
+    input_tokens = [1] * 1000
+    datum = Datum(
+        model_input=ModelInput.from_ints(input_tokens),
+        loss_fn_inputs={
+            "target_tokens": TensorData(data=[0] * 998 + [3, 4], dtype="int64", shape=[1000]),
+            "logprobs": TensorData(data=[0.0] * 998 + [-1.0, -1.0], dtype="float32", shape=[1000]),
+            "advantages": TensorData(data=[0.0] * 998 + [1.0, 1.0], dtype="float32", shape=[1000]),
+            "weights": TensorData(data=[0.0] * 998 + [1.0, 1.0], dtype="float32", shape=[1000]),
+        },
+    )
+
+    loss, _outputs, logprobs, ratios = engine._policy_loss([datum], loss_fn="importance_sampling")
+
+    assert torch.isfinite(loss)
+    assert engine.model.calls == [{"input_shape": (1, 1000), "logits_to_keep": 2}]
+    assert logprobs.shape == (1, 1000)
+    assert ratios.shape == (1, 1000)

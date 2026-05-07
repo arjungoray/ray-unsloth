@@ -163,6 +163,8 @@ class UnslothEngine:
             # Each Ray DDP worker gets exactly one visible GPU, so local ordinal
             # zero is the only valid CUDA device inside the worker process.
             loader_kwargs["device_map"] = {"": self.local_rank}
+        if self.model_config.attn_implementation is not None:
+            loader_kwargs["attn_implementation"] = self.model_config.attn_implementation
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_name,
             max_seq_length=self.model_config.max_seq_length,
@@ -173,6 +175,7 @@ class UnslothEngine:
             trust_remote_code=self.model_config.trust_remote_code,
             **loader_kwargs,
         )
+        self._set_attention_implementation(model)
         model = FastLanguageModel.get_peft_model(
             model,
             r=self.lora_config.rank,
@@ -185,7 +188,28 @@ class UnslothEngine:
             use_rslora=self.lora_config.use_rslora,
             loftq_config=self.lora_config.loftq_config,
         )
+        self._set_attention_implementation(model)
         return model, tokenizer
+
+    def _set_attention_implementation(self, model) -> None:
+        attn_implementation = self.model_config.attn_implementation
+        if attn_implementation is None:
+            return
+        seen: set[int] = set()
+        stack = [model]
+        while stack:
+            current = stack.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            config = getattr(current, "config", None)
+            if config is not None:
+                setattr(config, "_attn_implementation", attn_implementation)
+                setattr(config, "attn_implementation", attn_implementation)
+            for attr in ("base_model", "model", "language_model"):
+                child = getattr(current, attr, None)
+                if child is not None:
+                    stack.append(child)
 
     def get_tokenizer(self):
         return self.tokenizer
@@ -277,11 +301,94 @@ class UnslothEngine:
             raw = raw.tolist()
         return list(raw)
 
+    def _model_forward(self, batch: dict[str, Any], *, logits_to_keep: int | None = None):
+        if logits_to_keep is None:
+            return self.model(**batch)
+        keep = max(1, int(logits_to_keep))
+        try:
+            return self.model(**batch, logits_to_keep=keep)
+        except TypeError as first_error:
+            try:
+                return self.model(**batch, num_logits_to_keep=keep)
+            except TypeError:
+                if max(int(row.sum().detach().cpu()) for row in batch["attention_mask"]) > 8192:
+                    raise RuntimeError(
+                        "The model does not accept logits_to_keep/num_logits_to_keep, so this long-context "
+                        "loss would materialize full sequence logits and likely OOM."
+                    ) from first_error
+                return self.model(**batch)
+
+    def _weighted_positions_to_keep(
+        self,
+        *,
+        input_len: int,
+        targets: Sequence[int],
+        weights: Sequence[float] | None,
+        advantages: Sequence[float] | None = None,
+    ) -> int:
+        positions = []
+        for pos, target_token in enumerate(targets[:input_len]):
+            if int(target_token) == -100:
+                continue
+            weight = float(weights[pos]) if weights is not None and pos < len(weights) else 1.0
+            advantage = float(advantages[pos]) if advantages is not None and pos < len(advantages) else 1.0
+            if weight != 0.0 and advantage != 0.0:
+                positions.append(pos)
+        if not positions:
+            return 1
+        return input_len - min(positions)
+
+    def _logit_position(self, logits, *, input_len: int, token_position: int) -> int | None:
+        logits_len = int(logits.shape[1])
+        logits_start = input_len - logits_len
+        local_position = token_position - logits_start
+        if local_position < 0 or local_position >= logits_len:
+            return None
+        return local_position
+
     def _cross_entropy_loss(self, data: list[Datum]):
         import torch
 
         batch = self._batch_from_data(data)
-        outputs = self.model(**batch)
+        keep_counts = []
+        prepared_rows = []
+        for row_idx, datum in enumerate(data):
+            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
+            has_target_tokens = "target_tokens" in datum.loss_fn_inputs
+            raw_targets = datum.loss_fn_inputs.get("target_tokens")
+            raw_labels = datum.loss_fn_inputs.get("labels")
+            raw_weights = datum.loss_fn_inputs.get("weights")
+            if has_target_tokens and raw_targets is not None:
+                targets = [int(value) for value in self._loss_tensor_data(raw_targets)][:input_len]
+                positions = list(range(min(input_len, len(targets))))
+                output_indices = positions
+                logit_offset = 0
+            else:
+                targets = (
+                    [int(value) for value in self._loss_tensor_data(raw_labels)][:input_len]
+                    if raw_labels is not None
+                    else batch["input_ids"][row_idx, :input_len].detach().cpu().tolist()
+                )
+                positions = list(range(1, min(input_len, len(targets))))
+                output_indices = positions
+                logit_offset = -1
+            weights = None
+            if raw_weights is not None:
+                weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
+            logit_positions = [position + logit_offset for position in positions]
+            weighted_logit_positions = []
+            for position, logit_position in zip(positions, logit_positions):
+                if logit_position < 0 or logit_position >= input_len or position >= len(targets):
+                    continue
+                if int(targets[position]) == -100:
+                    continue
+                weight = weights[position] if weights is not None and position < len(weights) else 1.0
+                if float(weight) != 0.0:
+                    weighted_logit_positions.append(logit_position)
+            keep_counts.append(input_len - min(weighted_logit_positions) if weighted_logit_positions else 1)
+            prepared_rows.append((input_len, positions, output_indices, logit_positions, targets, weights))
+
+        outputs = self._model_forward(batch, logits_to_keep=max(keep_counts) if keep_counts else None)
         log_probs = outputs.logits.log_softmax(dim=-1)
 
         external_logprobs = torch.zeros(
@@ -292,32 +399,8 @@ class UnslothEngine:
         total_loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
         total_weight = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
 
-        for row_idx, datum in enumerate(data):
-            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
-            has_target_tokens = "target_tokens" in datum.loss_fn_inputs
-            raw_targets = datum.loss_fn_inputs.get("target_tokens")
-            raw_labels = datum.loss_fn_inputs.get("labels")
-            raw_weights = datum.loss_fn_inputs.get("weights")
-
-            if has_target_tokens and raw_targets is not None:
-                targets = [int(value) for value in self._loss_tensor_data(raw_targets)][:input_len]
-                positions = list(range(min(input_len, len(targets))))
-                output_indices = positions
-            else:
-                labels = (
-                    [int(value) for value in self._loss_tensor_data(raw_labels)][:input_len]
-                    if raw_labels is not None
-                    else batch["input_ids"][row_idx, :input_len].detach().cpu().tolist()
-                )
-                targets = labels
-                positions = list(range(1, min(input_len, len(labels))))
-                output_indices = positions
-
-            weights = None
-            if raw_weights is not None:
-                weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
-
-            for output_index, target_index in zip(output_indices, positions):
+        for row_idx, (input_len, positions, output_indices, logit_positions, targets, weights) in enumerate(prepared_rows):
+            for output_index, target_index, logit_index in zip(output_indices, positions, logit_positions):
                 target_token = int(targets[target_index])
                 if target_token == -100:
                     continue
@@ -326,8 +409,10 @@ class UnslothEngine:
                     weight = float(weights[target_index])
                 if weight == 0.0:
                     continue
-                logit_index = target_index if has_target_tokens else target_index - 1
-                token_logprob = log_probs[row_idx, logit_index, target_token]
+                local_logit_index = self._logit_position(log_probs, input_len=input_len, token_position=logit_index)
+                if local_logit_index is None:
+                    continue
+                token_logprob = log_probs[row_idx, local_logit_index, target_token]
                 external_logprobs[row_idx, output_index] = token_logprob
                 total_loss = total_loss - token_logprob * weight
                 total_weight = total_weight + weight
@@ -346,7 +431,28 @@ class UnslothEngine:
 
         loss_fn_config = loss_fn_config or {}
         batch = self._batch_from_data(data)
-        outputs = self.model(**batch)
+        prepared_rows = []
+        keep_counts = []
+        for row_idx, datum in enumerate(data):
+            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
+            targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][:input_len]
+            old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][:input_len]
+            advantages = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["advantages"])][:input_len]
+            raw_weights = datum.loss_fn_inputs.get("weights")
+            weights = [1.0] * input_len
+            if raw_weights is not None:
+                weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
+            keep_counts.append(
+                self._weighted_positions_to_keep(
+                    input_len=input_len,
+                    targets=targets,
+                    weights=weights,
+                    advantages=advantages,
+                )
+            )
+            prepared_rows.append((input_len, targets, old_logprobs, advantages, weights))
+
+        outputs = self._model_forward(batch, logits_to_keep=max(keep_counts) if keep_counts else None)
         log_probs = outputs.logits.log_softmax(dim=-1)
         external_logprobs = torch.zeros(
             batch["input_ids"].shape,
@@ -358,16 +464,7 @@ class UnslothEngine:
         clip_low = float(loss_fn_config.get("clip_low_threshold", 0.8))
         clip_high = float(loss_fn_config.get("clip_high_threshold", 1.2))
 
-        for row_idx, datum in enumerate(data):
-            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
-            targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][:input_len]
-            old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][:input_len]
-            advantages = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["advantages"])][:input_len]
-            raw_weights = datum.loss_fn_inputs.get("weights")
-            weights = [1.0] * input_len
-            if raw_weights is not None:
-                weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
-
+        for row_idx, (input_len, targets, old_logprobs, advantages, weights) in enumerate(prepared_rows):
             for pos, target_token in enumerate(targets):
                 if target_token == -100 or pos >= input_len:
                     continue
@@ -375,7 +472,10 @@ class UnslothEngine:
                 advantage = advantages[pos] if pos < len(advantages) else 0.0
                 if weight == 0.0 or advantage == 0.0:
                     continue
-                current_logprob = log_probs[row_idx, pos, target_token]
+                local_pos = self._logit_position(log_probs, input_len=input_len, token_position=pos)
+                if local_pos is None:
+                    continue
+                current_logprob = log_probs[row_idx, local_pos, target_token]
                 old_logprob = old_logprobs[pos] if pos < len(old_logprobs) else 0.0
                 ratio = torch.exp(current_logprob - old_logprob)
                 external_logprobs[row_idx, pos] = current_logprob
@@ -622,9 +722,11 @@ class UnslothEngine:
             "num_return_sequences": num_samples,
             "do_sample": sampling_params.temperature > 0,
             "return_dict_in_generate": True,
-            "output_scores": True,
+            "output_scores": sampling_params.logprobs_max_tokens is not None,
             "pad_token_id": pad_token_id,
         }
+        if sampling_params.max_time is not None:
+            kwargs["max_time"] = float(sampling_params.max_time)
         if sampling_params.temperature > 0:
             kwargs["temperature"] = sampling_params.temperature
             kwargs["top_p"] = sampling_params.top_p
@@ -644,48 +746,96 @@ class UnslothEngine:
         for row_index, sequence in enumerate(sequences):
             completion_tokens = list(sequence[prompt_length:])
             finish_reason = self._finish_reason(completion_tokens, sampling_params.max_tokens)
+            if sampling_params.max_time is not None and finish_reason == "stop":
+                finish_reason = "time"
             trimmed_tokens, stop_reason = self._trim_at_first_stop(completion_tokens, stop_token_ids)
             if stop_reason is not None:
                 finish_reason = stop_reason
             outputs.append((trimmed_tokens, [], finish_reason))
-        logprob_rows = self._completion_logprobs_batch(prompt_tokens, [tokens for tokens, _logprobs, _reason in outputs])
+        logprob_rows = None
+        if sampling_params.logprobs_max_tokens is not None:
+            logprob_rows = self._completion_logprobs_from_generate_scores(
+                generated,
+                [tokens for tokens, _logprobs, _reason in outputs],
+                logprobs_max_tokens=sampling_params.logprobs_max_tokens,
+            )
+        if logprob_rows is None:
+            logprob_rows = self._completion_logprobs_batch(
+                prompt_tokens,
+                [tokens for tokens, _logprobs, _reason in outputs],
+                logprobs_max_tokens=sampling_params.logprobs_max_tokens,
+            )
         return [
             (tokens, logprobs, finish_reason)
             for (tokens, _empty_logprobs, finish_reason), logprobs in zip(outputs, logprob_rows)
         ]
 
+    def _completion_logprobs_from_generate_scores(
+        self,
+        generated: Any,
+        completion_rows: list[list[int]],
+        *,
+        logprobs_max_tokens: int | None = None,
+    ) -> list[list[float | None]] | None:
+        import torch
+
+        scores = getattr(generated, "scores", None)
+        if scores is None:
+            return None
+        cap = logprobs_max_tokens
+        if cap is None:
+            cap = len(scores)
+        cap = max(0, int(cap))
+        rows: list[list[float | None]] = [[] for _completion in completion_rows]
+        for token_index, score in enumerate(scores[:cap]):
+            log_probs = torch.log_softmax(score.float(), dim=-1)
+            for row_index, completion in enumerate(completion_rows):
+                if token_index >= len(completion):
+                    continue
+                token = int(completion[token_index])
+                rows[row_index].append(float(log_probs[row_index, token].detach().cpu()))
+        return rows
+
     def _completion_logprobs_batch(
         self,
         prompt_tokens: list[int],
         completion_rows: list[list[int]],
+        *,
+        logprobs_max_tokens: int | None = None,
     ) -> list[list[float | None]]:
         import torch
 
         if not completion_rows:
             return []
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id or 0
-        full_rows = [prompt_tokens + completion for completion in completion_rows]
-        max_len = max(len(tokens) for tokens in full_rows)
-        padded = [tokens + [pad_token_id] * (max_len - len(tokens)) for tokens in full_rows]
-        attention = [[1] * len(tokens) + [0] * (max_len - len(tokens)) for tokens in full_rows]
-        input_ids = torch.tensor(padded, dtype=torch.long, device=self._model_device())
-        attention_mask = torch.tensor(attention, dtype=torch.long, device=self._model_device())
-        with torch.no_grad():
-            model_outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-            log_probs = model_outputs.logits.log_softmax(dim=-1)
-
+        if logprobs_max_tokens is not None:
+            cap = max(0, int(logprobs_max_tokens))
+            completion_rows = [completion[:cap] for completion in completion_rows]
+        if all(not completion for completion in completion_rows):
+            return [[] for _completion in completion_rows]
         prompt_len = len(prompt_tokens)
         rows: list[list[float | None]] = []
-        for row_index, completion in enumerate(completion_rows):
+        for completion in completion_rows:
+            if not completion:
+                rows.append([])
+                continue
+            full_row = prompt_tokens + completion
+            input_ids = torch.tensor([full_row], dtype=torch.long, device=self._model_device())
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=self._model_device())
+            with torch.no_grad():
+                model_outputs = self._model_forward(
+                    {"input_ids": input_ids, "attention_mask": attention_mask},
+                    logits_to_keep=len(completion),
+                )
+                log_probs = model_outputs.logits.log_softmax(dim=-1)
+            input_len = prompt_len + len(completion)
             values: list[float | None] = []
             for token_index, token in enumerate(completion):
                 logit_index = prompt_len + token_index - 1
-                if logit_index < 0:
+                local_logit_index = self._logit_position(log_probs, input_len=input_len, token_position=logit_index)
+                if local_logit_index is None:
                     values.append(None)
                 else:
-                    values.append(float(log_probs[row_index, logit_index, int(token)].detach().cpu()))
+                    values.append(float(log_probs[0, local_logit_index, int(token)].detach().cpu()))
             rows.append(values)
         return rows
 
@@ -698,6 +848,7 @@ class UnslothEngine:
         stop_token_ids: list[list[int]],
     ) -> list[tuple[list[int], list[float | None], str]]:
         import torch
+        import time
 
         outputs = []
         for _sample_index in range(num_samples):
@@ -705,8 +856,12 @@ class UnslothEngine:
             completion_tokens: list[int] = []
             logprobs: list[float | None] = []
             finish_reason: str | None = None
+            deadline = time.monotonic() + float(sampling_params.max_time) if sampling_params.max_time is not None else None
 
             for _step in range(sampling_params.max_tokens):
+                if deadline is not None and time.monotonic() >= deadline:
+                    finish_reason = "time"
+                    break
                 input_ids = torch.tensor([context], dtype=torch.long, device=self._model_device())
                 attention_mask = torch.tensor([[1] * len(context)], dtype=torch.long, device=self._model_device())
                 with torch.no_grad():
@@ -732,6 +887,8 @@ class UnslothEngine:
                 completion_tokens = trimmed_tokens
             if finish_reason is None:
                 finish_reason = "length" if len(completion_tokens) >= sampling_params.max_tokens else "stop"
+            if sampling_params.logprobs_max_tokens is not None:
+                logprobs = logprobs[: max(0, int(sampling_params.logprobs_max_tokens))]
             outputs.append((completion_tokens, logprobs, finish_reason))
         return outputs
 

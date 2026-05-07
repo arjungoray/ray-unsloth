@@ -174,7 +174,7 @@ class WandbLogger:
             return
         self.wandb.define_metric("train/step")
         self.wandb.define_metric("wandb/event_index")
-        for prefix in ("reward", "rollout", "policy", "timing", "data", "sampling", "train", "progress"):
+        for prefix in ("reward", "rollout", "policy", "timing", "data", "sampling", "train", "progress", "tokens"):
             self.wandb.define_metric(f"{prefix}/*", step_metric="train/step")
 
     def log(self, payload: dict[str, Any], *, step: int) -> None:

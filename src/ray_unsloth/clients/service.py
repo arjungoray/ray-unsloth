@@ -166,6 +166,11 @@ class ServiceClient:
 
         return RestClient(config=self.config)
 
+    def close(self) -> None:
+        close = getattr(self._session, "close", None)
+        if callable(close):
+            close()
+
     def _merged_metadata(
         self,
         metadata: dict[str, Any] | None = None,

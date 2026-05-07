@@ -114,6 +114,34 @@ rewards, advantages, policy summaries, timing, and completion tables to Weights
 & Biases by default. Install and authenticate W&B locally before running, or set
 `examples.qwen3_5_9b_rl_training.wandb.enabled` to `false` in the config.
 
+For a harder Tinker Cookbook-style Math RL run, install the example dataset
+dependencies and train Qwen3.5 9B on Hugging Face math datasets such as
+Hendrycks MATH, GSM8K, DeepMath, or Polaris:
+
+```bash
+pip install -e ".[examples]"
+python examples/qwen3_5_9b_math_dataset_rl_training.py \
+  --config configs/qwen3_5_9b_2x_l4_sharded.yaml \
+  --dataset math \
+  --dataset-limit 256
+```
+
+The default config uses the same Qwen3.5 9B model-sharded setup, samples from
+the live training actor, grades boxed answers, computes group-relative
+advantages, and uses `importance_sampling` for the policy update.
+
+To run the same cookbook-style loop on Qwen3.5 4B with one Modal L4:
+
+```bash
+python examples/qwen3_5_4b_math_dataset_rl_training.py \
+  --config configs/qwen3_5_4b_1x_l4.yaml \
+  --dataset math \
+  --dataset-limit 256
+```
+
+The 4B example logs cumulative W&B token counters under
+`tokens/prefill_total`, `tokens/sample_total`, and `tokens/train_total`.
+
 The default `configs/example.yaml` keeps Ray orchestration local and sends the
 Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
 adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests

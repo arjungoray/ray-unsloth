@@ -106,6 +106,7 @@ class FakeRuntimeSession:
     def __init__(self, config):
         self.config = config
         self.training_kwargs = None
+        self.closed = False
 
     def create_training_actor(self, **kwargs):
         self.training_kwargs = kwargs
@@ -114,6 +115,9 @@ class FakeRuntimeSession:
     def create_sampler_actors(self, **kwargs):
         del kwargs
         return "sample", [FakeSamplerActor()]
+
+    def close(self):
+        self.closed = True
 
 
 class FakeModalRuntime:
@@ -208,6 +212,15 @@ def test_tinker_first_sft_training_primitive_loop_shape(monkeypatch):
     assert losses == [1.25, 1.25]
     assert sample.sequences[0].text == "trained"
     assert training_client._actor.saved_sampler_path == "tinker-tinker-sft"
+
+
+def test_service_client_close_delegates_to_runtime_session(monkeypatch):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+
+    service_client = ServiceClient(config={})
+    service_client.close()
+
+    assert service_client._session.closed is True
 
 
 def test_save_weights_and_get_sampling_client_reuses_training_actor():

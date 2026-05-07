@@ -28,6 +28,10 @@ modal = [
 dev = [
   "pytest>=9.0.3",
 ]
+examples = [
+  "datasets>=4.0.0",
+  "sympy>=1.14.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,122 @@
+ray:
+  address: null
+  namespace: ray-unsloth
+  ignore_reinit_error: true
+
+model:
+  config: qwen3.5-4b
+
+lora:
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  random_state: 3407
+  use_rslora: false
+  bias: none
+  use_gradient_checkpointing: unsloth
+  loftq_config: null
+
+model_configs:
+  qwen3.5-4b:
+    model:
+      base_model: Qwen/Qwen3.5-4B
+      max_seq_length: 2048
+      dtype: bfloat16
+      load_in_4bit: false
+      fast_inference: false
+      gpu_memory_utilization: 0.85
+      trust_remote_code: true
+    lora:
+      rank: 16
+      alpha: 16
+      dropout: 0.0
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - o_proj
+        - gate_proj
+        - up_proj
+        - down_proj
+      random_state: 3407
+      use_rslora: false
+      bias: none
+      use_gradient_checkpointing: unsloth
+      loftq_config: null
+
+resources:
+  trainer_num_gpus: 0.0
+  trainer_num_cpus: 0.25
+  sampler_num_gpus: 0.0
+  sampler_num_cpus: 0.25
+  sampler_replicas: 1
+  placement_strategy: PACK
+
+distributed:
+  enabled: false
+  mode: null
+  num_nodes: 1
+  gpus_per_node: 1
+  backend: nccl
+  placement_strategy: STRICT_PACK
+
+examples:
+  qwen3_5_4b_math_dataset_rl_training:
+    dataset: math
+    split: train
+    dataset_limit: 256
+    seed: 0
+    steps: 50
+    batch_size: 1
+    group_size: 4
+    learning_rate: 0.00004
+    max_tokens: 8096
+    max_train_tokens: 2048
+    train_microbatch_size: 1
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    max_time: 120.0
+    exploration_temperature: 1.0
+    exploration_top_p: 0.95
+    min_train_datums: 1
+    sft_anchor_weight: 0.1
+    enable_thinking: true
+    stop:
+      - <END>
+    name: qwen3.5-4b-math-dataset-rl
+    wandb:
+      enabled: true
+      project: ray-unsloth-rl
+      name: qwen3.5-4b-1xl4-math-dataset-rl
+      tags:
+        - rl
+        - qwen3.5
+        - qwen3.5-4b
+        - lora
+        - 1xl4
+        - math
+        - tinker-cookbook
+      log_completions: 64
+
+modal:
+  enabled: true
+  app_name: ray-unsloth
+  gpu: L4
+  timeout: 1800
+  scaledown_window: 300
+  volume_name: ray-unsloth-checkpoints
+  volume_mount_path: /checkpoints
+  python_version: "3.11"
+
+checkpoint_root: /checkpoints
+supported_models:
+  - qwen3.5-4b

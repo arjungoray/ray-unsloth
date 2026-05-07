@@ -41,6 +41,7 @@ class ModelConfig:
     gpu_memory_utilization: float = 0.85
     trust_remote_code: bool = True
     device_map: Any | None = None
+    attn_implementation: str | None = None
 
 
 @dataclass(slots=True)

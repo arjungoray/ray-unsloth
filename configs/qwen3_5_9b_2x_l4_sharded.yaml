@@ -191,6 +191,42 @@ examples:
         - 2xl4
         - model-sharded
       log_completions: 64
+  qwen3_5_9b_math_dataset_rl_training:
+    dataset: math
+    split: train
+    dataset_limit: 256
+    seed: 0
+    steps: 50
+    batch_size: 1
+    group_size: 4
+    learning_rate: 0.00004
+    max_tokens: 8096
+    max_train_tokens: 2048
+    train_microbatch_size: 1
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    max_time: 120.0
+    exploration_temperature: 1.0
+    exploration_top_p: 0.95
+    min_train_datums: 1
+    sft_anchor_weight: 0.1
+    enable_thinking: true
+    stop:
+      - <END>
+    name: qwen3.5-9b-math-dataset-rl
+    wandb:
+      enabled: true
+      project: ray-unsloth-rl
+      name: qwen3.5-9b-math-dataset-rl
+      tags:
+        - rl
+        - qwen3.5
+        - lora
+        - 2xl4
+        - math
+        - tinker-cookbook
+      log_completions: 64
 
 modal:
   enabled: true

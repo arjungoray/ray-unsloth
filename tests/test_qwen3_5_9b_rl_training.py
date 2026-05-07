@@ -237,6 +237,22 @@ def test_wandb_progress_logs_multiple_events_for_one_training_step():
     assert run.calls[1][0]["data/datums"] == 1
 
 
+def test_wandb_define_metrics_tracks_token_totals():
+    class FakeWandb:
+        def __init__(self):
+            self.metrics = []
+
+        def define_metric(self, name, **kwargs):
+            self.metrics.append((name, kwargs))
+
+    wandb = FakeWandb()
+    logger = qwen3_5_9b_rl_training.WandbLogger(enabled=True, wandb=wandb)
+
+    logger.define_metrics()
+
+    assert ("tokens/*", {"step_metric": "train/step"}) in wandb.metrics
+
+
 class _FakeWandbLogger:
     max_completion_rows = 64
 
