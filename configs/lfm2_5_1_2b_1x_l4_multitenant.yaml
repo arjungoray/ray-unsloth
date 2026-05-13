@@ -1,0 +1,113 @@
+ray:
+  address: null
+  namespace: ray-unsloth
+  ignore_reinit_error: true
+
+model:
+  config: lfm2.5-1.2b-instruct
+
+lora:
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - out_proj
+    - in_proj
+    - w1
+    - w2
+    - w3
+  random_state: 3407
+  use_rslora: false
+  bias: none
+  use_gradient_checkpointing: unsloth
+  loftq_config: null
+
+model_configs:
+  lfm2.5-1.2b-instruct:
+    model:
+      base_model: LiquidAI/LFM2.5-1.2B-Instruct
+      max_seq_length: 4096
+      dtype: bfloat16
+      load_in_4bit: false
+      fast_inference: auto
+      gpu_memory_utilization: 0.85
+      trust_remote_code: true
+      attn_implementation: flash_attention_2
+    lora:
+      rank: 16
+      alpha: 16
+      dropout: 0.0
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - out_proj
+        - in_proj
+        - w1
+        - w2
+        - w3
+      random_state: 3407
+      use_rslora: false
+      bias: none
+      use_gradient_checkpointing: unsloth
+      loftq_config: null
+
+resources:
+  trainer_num_gpus: 0.0
+  trainer_num_cpus: 0.25
+  trainer_replicas: 2
+  sampler_num_gpus: 0.0
+  sampler_num_cpus: 0.25
+  sampler_replicas: 1
+  placement_strategy: PACK
+
+speed:
+  profile: quality
+
+distributed:
+  enabled: false
+  mode: null
+  num_nodes: 1
+  gpus_per_node: 1
+  backend: nccl
+  placement_strategy: STRICT_PACK
+
+examples:
+  lfm2_5_1_2b_multitenant_sft:
+    steps: 12
+    learning_rate: 0.0002
+    max_length: 512
+    sample_tokens: 128
+    temperature: 0.7
+    rank: 16
+    wandb:
+      enabled: true
+      project: ray-unsloth-multitenant
+      name: lfm2.5-1.2b-instruct-1xl4-multitenant-sft
+      tags:
+        - sft
+        - LFM2.5
+        - lfm2.5-1.2b-instruct
+        - lora
+        - multi-tenant
+        - 1xl4
+      log_samples: 8
+
+modal:
+  enabled: true
+  app_name: ray-unsloth-multitenant
+  gpu: L4
+  timeout: 1800
+  scaledown_window: 300
+  max_inputs: 2
+  trainer_pool_key: lfm2.5-1.2b-instruct-l4-shared
+  volume_name: ray-unsloth-checkpoints
+  volume_mount_path: /checkpoints
+  python_version: "3.11"
+
+checkpoint_root: /checkpoints
+supported_models:
+  - lfm2.5-1.2b-instruct

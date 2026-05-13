@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import importlib.util
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ray_unsloth.checkpoints import (
     atomic_checkpoint_dir,
@@ -15,7 +17,7 @@ from ray_unsloth.checkpoints import (
     resolve_path,
     write_manifest,
 )
-from ray_unsloth.config import LoRAConfig, ModelConfig
+from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
 from ray_unsloth.errors import UnsupportedLossError
 from ray_unsloth.types import (
     AdamParams,
@@ -48,6 +50,38 @@ def _torch_dtype(name: str):
     }.get(name.lower(), None)
 
 
+def _requires_transformers_5_for_qwen3_5(base_model: str) -> bool:
+    normalized = base_model.lower().replace("-", "_").replace("/", "_").replace(".", "_")
+    return "qwen3_5" in normalized
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def _flash_attention_2_available() -> bool:
+    return _module_available("flash_attn")
+
+
+def _flash_attention_3_available() -> bool:
+    return _module_available("flash_attn_interface")
+
+
+@dataclass(slots=True)
+class _BatchPlan:
+    batch: dict[str, Any]
+    row_lengths: list[int]
+    row_starts: list[int]
+    packed: bool = False
+
+    @property
+    def max_len(self) -> int:
+        return max(self.row_lengths) if self.row_lengths else 0
+
+
 class UnslothEngine:
     """Owns one Unsloth model, tokenizer, optimizer, and gradient state."""
 
@@ -58,6 +92,7 @@ class UnslothEngine:
         model_config: ModelConfig,
         lora_config: LoRAConfig,
         checkpoint_root: str,
+        speed_config: SpeedConfig | None = None,
         model_path: str | None = None,
         with_optimizer: bool = False,
         metadata: dict[str, Any] | None = None,
@@ -70,6 +105,7 @@ class UnslothEngine:
         self.session_id = session_id
         self.model_config = model_config
         self.lora_config = lora_config
+        self.speed_config = speed_config or SpeedConfig()
         self.checkpoint_root = checkpoint_root
         self.metadata = dict(metadata or {})
         self.rank = rank
@@ -153,6 +189,7 @@ class UnslothEngine:
             dist.barrier()
 
     def _load_model(self, model_path: str | None = None):
+        self._configure_unsloth_environment()
         from unsloth import FastLanguageModel
 
         model_name = self.model_config.base_model
@@ -163,15 +200,22 @@ class UnslothEngine:
             # Each Ray DDP worker gets exactly one visible GPU, so local ordinal
             # zero is the only valid CUDA device inside the worker process.
             loader_kwargs["device_map"] = {"": self.local_rank}
-        if self.model_config.attn_implementation is not None:
-            loader_kwargs["attn_implementation"] = self.model_config.attn_implementation
+        attn_implementation = self._effective_attn_implementation()
+        self._resolved_attn_implementation = attn_implementation
+        if attn_implementation is not None:
+            loader_kwargs["attn_implementation"] = attn_implementation
+        fast_inference = self._effective_fast_inference()
+        if fast_inference:
+            loader_kwargs["max_lora_rank"] = self.lora_config.rank
+            if self._effective_vllm_standby():
+                loader_kwargs["unsloth_vllm_standby"] = True
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_name,
             max_seq_length=self.model_config.max_seq_length,
             dtype=_torch_dtype(self.model_config.dtype),
             load_in_4bit=self.model_config.load_in_4bit,
-            fast_inference=self.model_config.fast_inference,
-            gpu_memory_utilization=self.model_config.gpu_memory_utilization,
+            fast_inference=fast_inference,
+            gpu_memory_utilization=self._effective_gpu_memory_utilization(fast_inference),
             trust_remote_code=self.model_config.trust_remote_code,
             **loader_kwargs,
         )
@@ -191,8 +235,91 @@ class UnslothEngine:
         self._set_attention_implementation(model)
         return model, tokenizer
 
+    def _speed(self) -> SpeedConfig:
+        return getattr(self, "speed_config", SpeedConfig())
+
+    def _effective_fast_inference(self) -> bool:
+        value = self.model_config.fast_inference
+        if value == "auto":
+            if _requires_transformers_5_for_qwen3_5(self.model_config.base_model):
+                return False
+            return not bool(self.model_config.trust_remote_code)
+        return bool(value)
+
+    def _effective_vllm_standby(self) -> bool:
+        value = self._speed().vllm_standby
+        if value == "auto":
+            return self._effective_fast_inference()
+        return bool(value)
+
+    def _effective_gpu_memory_utilization(self, fast_inference: bool) -> float:
+        if fast_inference and self._effective_vllm_standby() and self.model_config.gpu_memory_utilization == 0.85:
+            return 0.95
+        return self.model_config.gpu_memory_utilization
+
+    def _effective_attn_implementation(self) -> str | None:
+        configured = self.model_config.attn_implementation
+        if configured not in {None, "auto"}:
+            return configured
+        value = self._speed().flash_attention_2
+        if value is False:
+            return None
+        if value is True:
+            return "flash_attention_2"
+        # auto: pick best available backend based on GPU capability
+        return self._best_attn_backend()
+
+    def _gpu_compute_capability(self) -> tuple[int, int] | None:
+        """Return (major, minor) compute capability or None if unavailable."""
+        try:
+            import torch
+        except Exception:
+            return None
+        try:
+            if not torch.cuda.is_available():
+                return None
+            return torch.cuda.get_device_capability()
+        except Exception:
+            return None
+
+    def _best_attn_backend(self) -> str | None:
+        """Select the best attention backend for the current GPU.
+
+        Tiered selection based on GPU architecture and installed kernels:
+          - compute capability >= 9.0 (H100/B200):  flash_attention_3 when available
+          - compute capability == 8.0 (A100):        flash_attention_2 when available
+          - all other GPUs or missing FA kernels:    xformers
+        """
+        cap = self._gpu_compute_capability()
+        if cap is None:
+            return None
+        major, minor = cap
+
+        if major >= 9 and _flash_attention_3_available():
+            return "flash_attention_3"
+
+        if major == 8 and minor == 0 and _flash_attention_2_available():
+            return "flash_attention_2"
+
+        return "xformers"
+
+    def _configure_unsloth_environment(self) -> None:
+        if self._effective_vllm_standby():
+            os.environ.setdefault("UNSLOTH_VLLM_STANDBY", "1")
+
+    def _padding_free_requested(self) -> bool:
+        value = self._speed().padding_free
+        if value == "auto":
+            return True
+        return bool(value)
+
+    def _padding_free_forced(self) -> bool:
+        return self._speed().padding_free is True
+
     def _set_attention_implementation(self, model) -> None:
-        attn_implementation = self.model_config.attn_implementation
+        attn_implementation = getattr(self, "_resolved_attn_implementation", None)
+        if attn_implementation is None and self.model_config.attn_implementation not in {None, "auto"}:
+            attn_implementation = self.model_config.attn_implementation
         if attn_implementation is None:
             return
         seen: set[int] = set()
@@ -223,6 +350,7 @@ class UnslothEngine:
             metadata={
                 "max_seq_length": self.model_config.max_seq_length,
                 "dtype": self.model_config.dtype,
+                "attn_implementation": getattr(self, "_resolved_attn_implementation", None),
                 **self.metadata,
             },
         )
@@ -242,7 +370,20 @@ class UnslothEngine:
                     group["weight_decay"] = params.weight_decay
             return self.optimizer
         params = params or AdamParams(learning_rate=2e-5)
-        self.optimizer = torch.optim.AdamW(
+        optimizer_cls: Any = torch.optim.AdamW
+        optimizer_name = self._speed().optimizer
+        if optimizer_name != "adamw_torch" and torch.cuda.is_available():
+            try:
+                import bitsandbytes as bnb
+
+                optimizer_cls = (
+                    bnb.optim.PagedAdamW8bit
+                    if optimizer_name == "paged_adamw_8bit"
+                    else bnb.optim.AdamW8bit
+                )
+            except Exception:
+                optimizer_cls = torch.optim.AdamW
+        self.optimizer = optimizer_cls(
             self.model.parameters(),
             lr=params.learning_rate,
             betas=params.betas,
@@ -251,22 +392,46 @@ class UnslothEngine:
         )
         return self.optimizer
 
-    def _batch_from_data(self, data: list[Datum]):
+    def _batch_from_data(self, data: list[Datum], *, packed: bool = False) -> _BatchPlan:
         import torch
 
         if not data:
             raise ValueError("data must not be empty")
         input_ids = [datum.model_input.to_ints() for datum in data]
+        lengths = [len(tokens) for tokens in input_ids]
+        starts = []
+        offset = 0
+        for length in lengths:
+            starts.append(offset)
+            offset += length
+        if packed and len(input_ids) > 1:
+            flat_tokens = [token for row in input_ids for token in row]
+            flat_positions = [pos for row in input_ids for pos, _token in enumerate(row)]
+            return _BatchPlan(
+                batch={
+                    "input_ids": torch.tensor([flat_tokens], dtype=torch.long, device=self._model_device()),
+                    "position_ids": torch.tensor([flat_positions], dtype=torch.long, device=self._model_device()),
+                    "packed_seq_lengths": torch.tensor(lengths, dtype=torch.int32),
+                },
+                row_lengths=lengths,
+                row_starts=starts,
+                packed=True,
+            )
         max_len = max(len(tokens) for tokens in input_ids)
         pad_token_id = self.tokenizer.pad_token_id
         if pad_token_id is None:
             pad_token_id = self.tokenizer.eos_token_id or 0
         padded = [tokens + [pad_token_id] * (max_len - len(tokens)) for tokens in input_ids]
         attention = [[1] * len(tokens) + [0] * (max_len - len(tokens)) for tokens in input_ids]
-        return {
-            "input_ids": torch.tensor(padded, dtype=torch.long, device=self._model_device()),
-            "attention_mask": torch.tensor(attention, dtype=torch.long, device=self._model_device()),
-        }
+        return _BatchPlan(
+            batch={
+                "input_ids": torch.tensor(padded, dtype=torch.long, device=self._model_device()),
+                "attention_mask": torch.tensor(attention, dtype=torch.long, device=self._model_device()),
+            },
+            row_lengths=lengths,
+            row_starts=[0] * len(lengths),
+            packed=False,
+        )
 
     def _loss_tensor_data(self, raw: Any) -> list[Any]:
         if isinstance(raw, ModelInput):
@@ -302,6 +467,7 @@ class UnslothEngine:
         return list(raw)
 
     def _model_forward(self, batch: dict[str, Any], *, logits_to_keep: int | None = None):
+        batch = {key: value for key, value in batch.items() if value is not None}
         if logits_to_keep is None:
             return self.model(**batch)
         keep = max(1, int(logits_to_keep))
@@ -349,11 +515,22 @@ class UnslothEngine:
     def _cross_entropy_loss(self, data: list[Datum]):
         import torch
 
-        batch = self._batch_from_data(data)
+        plan = self._batch_from_data(data, packed=self._padding_free_requested())
+        try:
+            return self._cross_entropy_loss_for_plan(data, plan)
+        except TypeError:
+            if not plan.packed or self._padding_free_forced():
+                raise
+            return self._cross_entropy_loss_for_plan(data, self._batch_from_data(data, packed=False))
+
+    def _cross_entropy_loss_for_plan(self, data: list[Datum], plan: _BatchPlan):
+        import torch
+
+        batch = plan.batch
         keep_counts = []
         prepared_rows = []
         for row_idx, datum in enumerate(data):
-            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
+            input_len = plan.row_lengths[row_idx]
             has_target_tokens = "target_tokens" in datum.loss_fn_inputs
             raw_targets = datum.loss_fn_inputs.get("target_tokens")
             raw_labels = datum.loss_fn_inputs.get("labels")
@@ -385,19 +562,28 @@ class UnslothEngine:
                 weight = weights[position] if weights is not None and position < len(weights) else 1.0
                 if float(weight) != 0.0:
                     weighted_logit_positions.append(logit_position)
-            keep_counts.append(input_len - min(weighted_logit_positions) if weighted_logit_positions else 1)
+            if not plan.packed:
+                keep_counts.append(input_len - min(weighted_logit_positions) if weighted_logit_positions else 1)
             prepared_rows.append((input_len, positions, output_indices, logit_positions, targets, weights))
 
-        outputs = self._model_forward(batch, logits_to_keep=max(keep_counts) if keep_counts else None)
+        outputs = self._model_forward(
+            batch,
+            logits_to_keep=None if plan.packed else (max(keep_counts) if keep_counts else None),
+        )
         log_probs = outputs.logits.log_softmax(dim=-1)
 
         external_logprobs = torch.zeros(
-            batch["input_ids"].shape,
+            (len(data), plan.max_len),
             dtype=log_probs.dtype,
             device=log_probs.device,
         )
-        total_loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
-        total_weight = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
+        model_rows = []
+        local_positions = []
+        target_tokens = []
+        row_indices = []
+        output_positions = []
+        token_weights = []
+        logits_len = int(log_probs.shape[1])
 
         for row_idx, (input_len, positions, output_indices, logit_positions, targets, weights) in enumerate(prepared_rows):
             for output_index, target_index, logit_index in zip(output_indices, positions, logit_positions):
@@ -409,15 +595,33 @@ class UnslothEngine:
                     weight = float(weights[target_index])
                 if weight == 0.0:
                     continue
-                local_logit_index = self._logit_position(log_probs, input_len=input_len, token_position=logit_index)
-                if local_logit_index is None:
+                if plan.packed:
+                    model_row = 0
+                    local_logit_index = plan.row_starts[row_idx] + logit_index
+                else:
+                    model_row = row_idx
+                    local_logit_index = self._logit_position(log_probs, input_len=input_len, token_position=logit_index)
+                if local_logit_index is None or local_logit_index < 0 or local_logit_index >= logits_len:
                     continue
-                token_logprob = log_probs[row_idx, local_logit_index, target_token]
-                external_logprobs[row_idx, output_index] = token_logprob
-                total_loss = total_loss - token_logprob * weight
-                total_weight = total_weight + weight
+                model_rows.append(model_row)
+                local_positions.append(local_logit_index)
+                target_tokens.append(target_token)
+                row_indices.append(row_idx)
+                output_positions.append(output_index)
+                token_weights.append(weight)
 
-        loss = total_loss
+        if model_rows:
+            model_rows_t = torch.tensor(model_rows, dtype=torch.long, device=log_probs.device)
+            local_positions_t = torch.tensor(local_positions, dtype=torch.long, device=log_probs.device)
+            target_tokens_t = torch.tensor(target_tokens, dtype=torch.long, device=log_probs.device)
+            gathered = log_probs[model_rows_t, local_positions_t, target_tokens_t]
+            row_indices_t = torch.tensor(row_indices, dtype=torch.long, device=log_probs.device)
+            output_positions_t = torch.tensor(output_positions, dtype=torch.long, device=log_probs.device)
+            weights_t = torch.tensor(token_weights, dtype=log_probs.dtype, device=log_probs.device)
+            external_logprobs[row_indices_t, output_positions_t] = gathered
+            loss = -(gathered * weights_t).sum()
+        else:
+            loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
         return loss, outputs, external_logprobs
 
     def _policy_loss(
@@ -430,11 +634,34 @@ class UnslothEngine:
         import torch
 
         loss_fn_config = loss_fn_config or {}
-        batch = self._batch_from_data(data)
+        plan = self._batch_from_data(data, packed=self._padding_free_requested())
+        try:
+            return self._policy_loss_for_plan(data, plan, loss_fn=loss_fn, loss_fn_config=loss_fn_config)
+        except TypeError:
+            if not plan.packed or self._padding_free_forced():
+                raise
+            return self._policy_loss_for_plan(
+                data,
+                self._batch_from_data(data, packed=False),
+                loss_fn=loss_fn,
+                loss_fn_config=loss_fn_config,
+            )
+
+    def _policy_loss_for_plan(
+        self,
+        data: list[Datum],
+        plan: _BatchPlan,
+        *,
+        loss_fn: str,
+        loss_fn_config: dict[str, Any],
+    ):
+        import torch
+
+        batch = plan.batch
         prepared_rows = []
         keep_counts = []
         for row_idx, datum in enumerate(data):
-            input_len = int(batch["attention_mask"][row_idx].sum().detach().cpu())
+            input_len = plan.row_lengths[row_idx]
             targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][:input_len]
             old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][:input_len]
             advantages = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["advantages"])][:input_len]
@@ -442,27 +669,38 @@ class UnslothEngine:
             weights = [1.0] * input_len
             if raw_weights is not None:
                 weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
-            keep_counts.append(
-                self._weighted_positions_to_keep(
-                    input_len=input_len,
-                    targets=targets,
-                    weights=weights,
-                    advantages=advantages,
+            if not plan.packed:
+                keep_counts.append(
+                    self._weighted_positions_to_keep(
+                        input_len=input_len,
+                        targets=targets,
+                        weights=weights,
+                        advantages=advantages,
+                    )
                 )
-            )
             prepared_rows.append((input_len, targets, old_logprobs, advantages, weights))
 
-        outputs = self._model_forward(batch, logits_to_keep=max(keep_counts) if keep_counts else None)
+        outputs = self._model_forward(
+            batch,
+            logits_to_keep=None if plan.packed else (max(keep_counts) if keep_counts else None),
+        )
         log_probs = outputs.logits.log_softmax(dim=-1)
         external_logprobs = torch.zeros(
-            batch["input_ids"].shape,
+            (len(data), plan.max_len),
             dtype=log_probs.dtype,
             device=log_probs.device,
         )
         external_ratios = torch.zeros_like(external_logprobs)
-        total_loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
         clip_low = float(loss_fn_config.get("clip_low_threshold", 0.8))
         clip_high = float(loss_fn_config.get("clip_high_threshold", 1.2))
+        model_rows = []
+        local_positions = []
+        target_tokens = []
+        row_indices = []
+        output_positions = []
+        old_values = []
+        weighted_advantages = []
+        logits_len = int(log_probs.shape[1])
 
         for row_idx, (input_len, targets, old_logprobs, advantages, weights) in enumerate(prepared_rows):
             for pos, target_token in enumerate(targets):
@@ -472,26 +710,48 @@ class UnslothEngine:
                 advantage = advantages[pos] if pos < len(advantages) else 0.0
                 if weight == 0.0 or advantage == 0.0:
                     continue
-                local_pos = self._logit_position(log_probs, input_len=input_len, token_position=pos)
-                if local_pos is None:
-                    continue
-                current_logprob = log_probs[row_idx, local_pos, target_token]
-                old_logprob = old_logprobs[pos] if pos < len(old_logprobs) else 0.0
-                ratio = torch.exp(current_logprob - old_logprob)
-                external_logprobs[row_idx, pos] = current_logprob
-                external_ratios[row_idx, pos] = ratio
-                weighted_advantage = weight * advantage
-                if loss_fn == "importance_sampling":
-                    token_loss = -ratio * weighted_advantage
-                elif loss_fn == "ppo":
-                    clipped_ratio = ratio.clamp(clip_low, clip_high)
-                    token_loss = -torch.minimum(ratio * weighted_advantage, clipped_ratio * weighted_advantage)
-                elif loss_fn == "cispo":
-                    clipped_ratio = ratio.detach().clamp(clip_low, clip_high)
-                    token_loss = -clipped_ratio * weighted_advantage * current_logprob
+                if plan.packed:
+                    model_row = 0
+                    local_pos = plan.row_starts[row_idx] + pos
                 else:
-                    raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
-                total_loss = total_loss + token_loss
+                    model_row = row_idx
+                    local_pos = self._logit_position(log_probs, input_len=input_len, token_position=pos)
+                if local_pos is None or local_pos < 0 or local_pos >= logits_len:
+                    continue
+                model_rows.append(model_row)
+                local_positions.append(local_pos)
+                target_tokens.append(target_token)
+                row_indices.append(row_idx)
+                output_positions.append(pos)
+                old_values.append(old_logprobs[pos] if pos < len(old_logprobs) else 0.0)
+                weighted_advantages.append(weight * advantage)
+
+        if not model_rows:
+            total_loss = torch.zeros((), dtype=log_probs.dtype, device=log_probs.device)
+            return total_loss, outputs, external_logprobs, external_ratios
+
+        model_rows_t = torch.tensor(model_rows, dtype=torch.long, device=log_probs.device)
+        local_positions_t = torch.tensor(local_positions, dtype=torch.long, device=log_probs.device)
+        target_tokens_t = torch.tensor(target_tokens, dtype=torch.long, device=log_probs.device)
+        current_logprobs = log_probs[model_rows_t, local_positions_t, target_tokens_t]
+        old_logprobs_t = torch.tensor(old_values, dtype=log_probs.dtype, device=log_probs.device)
+        ratio = torch.exp(current_logprobs - old_logprobs_t)
+        advantages_t = torch.tensor(weighted_advantages, dtype=log_probs.dtype, device=log_probs.device)
+        row_indices_t = torch.tensor(row_indices, dtype=torch.long, device=log_probs.device)
+        output_positions_t = torch.tensor(output_positions, dtype=torch.long, device=log_probs.device)
+        external_logprobs[row_indices_t, output_positions_t] = current_logprobs
+        external_ratios[row_indices_t, output_positions_t] = ratio
+        if loss_fn == "importance_sampling":
+            token_losses = -ratio * advantages_t
+        elif loss_fn == "ppo":
+            clipped_ratio = ratio.clamp(clip_low, clip_high)
+            token_losses = -torch.minimum(ratio * advantages_t, clipped_ratio * advantages_t)
+        elif loss_fn == "cispo":
+            clipped_ratio = ratio.detach().clamp(clip_low, clip_high)
+            token_losses = -clipped_ratio * advantages_t * current_logprobs
+        else:
+            raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+        total_loss = token_losses.sum()
 
         return total_loss, outputs, external_logprobs, external_ratios
 
@@ -594,8 +854,8 @@ class UnslothEngine:
         from unsloth import FastLanguageModel
 
         FastLanguageModel.for_training(self._unwrap_model())
-        batch = self._batch_from_data(data)
-        outputs = self.model(**batch)
+        plan = self._batch_from_data(data, packed=False)
+        outputs = self.model(**plan.batch)
         if isinstance(loss_fn, str):
             if loss_fn not in self._custom_losses:
                 raise UnsupportedLossError(f"Custom loss is not registered: {loss_fn}")
@@ -680,7 +940,8 @@ class UnslothEngine:
         sampling_params: SamplingParams,
         stop_token_ids: list[list[int]],
     ) -> list[tuple[list[int], list[float | None], str]]:
-        if hasattr(self._unwrap_model(), "generate"):
+        model = self._unwrap_model()
+        if hasattr(model, "fast_generate") or hasattr(model, "generate"):
             try:
                 return self._generate_with_transformers_generate(
                     prompt_tokens=prompt_tokens,
@@ -708,6 +969,9 @@ class UnslothEngine:
         import torch
 
         model = self._unwrap_model()
+        generate = getattr(model, "fast_generate", None)
+        if not callable(generate):
+            generate = model.generate
         device = self._model_device()
         input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
         attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
@@ -738,7 +1002,7 @@ class UnslothEngine:
             torch.manual_seed(sampling_params.seed)
 
         with torch.no_grad():
-            generated = model.generate(**kwargs)
+            generated = generate(**kwargs)
 
         sequences = generated.sequences.detach().cpu().tolist()
         outputs = []
@@ -813,30 +1077,42 @@ class UnslothEngine:
         if all(not completion for completion in completion_rows):
             return [[] for _completion in completion_rows]
         prompt_len = len(prompt_tokens)
-        rows: list[list[float | None]] = []
-        for completion in completion_rows:
-            if not completion:
-                rows.append([])
-                continue
-            full_row = prompt_tokens + completion
-            input_ids = torch.tensor([full_row], dtype=torch.long, device=self._model_device())
-            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=self._model_device())
-            with torch.no_grad():
-                model_outputs = self._model_forward(
-                    {"input_ids": input_ids, "attention_mask": attention_mask},
-                    logits_to_keep=len(completion),
-                )
-                log_probs = model_outputs.logits.log_softmax(dim=-1)
+        nonempty = [(index, completion) for index, completion in enumerate(completion_rows) if completion]
+        max_completion = max(len(completion) for _index, completion in nonempty)
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id or 0
+        full_rows = [prompt_tokens + completion for _index, completion in nonempty]
+        max_len = max(len(row) for row in full_rows)
+        input_ids = torch.tensor(
+            [row + [pad_token_id] * (max_len - len(row)) for row in full_rows],
+            dtype=torch.long,
+            device=self._model_device(),
+        )
+        attention_mask = torch.tensor(
+            [[1] * len(row) + [0] * (max_len - len(row)) for row in full_rows],
+            dtype=torch.long,
+            device=self._model_device(),
+        )
+        with torch.no_grad():
+            model_outputs = self._model_forward(
+                {"input_ids": input_ids, "attention_mask": attention_mask},
+                logits_to_keep=max_completion,
+            )
+            log_probs = model_outputs.logits.log_softmax(dim=-1)
+        rows: list[list[float | None]] = [[] for _completion in completion_rows]
+        logits_len = int(log_probs.shape[1])
+        for batch_row, (original_index, completion) in enumerate(nonempty):
             input_len = prompt_len + len(completion)
             values: list[float | None] = []
             for token_index, token in enumerate(completion):
                 logit_index = prompt_len + token_index - 1
                 local_logit_index = self._logit_position(log_probs, input_len=input_len, token_position=logit_index)
-                if local_logit_index is None:
+                if local_logit_index is None or local_logit_index < 0 or local_logit_index >= logits_len:
                     values.append(None)
                 else:
-                    values.append(float(log_probs[0, local_logit_index, int(token)].detach().cpu()))
-            rows.append(values)
+                    values.append(float(log_probs[batch_row, local_logit_index, int(token)].detach().cpu()))
+            rows[original_index] = values
         return rows
 
     def _generate_with_forward_loop(
@@ -1065,8 +1341,18 @@ class UnslothEngine:
             write_manifest(tmp_dir, manifest)
         return checkpoint_ref(target, has_optimizer=include_optimizer)
 
+    def _checkpoint_target(self, path: str | None, *, prefix: str) -> Path:
+        if path is None:
+            return new_checkpoint_path(self.checkpoint_root, prefix, self.step)
+        raw = str(path)
+        explicit_uri = raw.startswith(("local://", "tinker://"))
+        explicit_path = Path(raw).is_absolute() or Path(raw).name != raw
+        if explicit_uri or explicit_path:
+            return resolve_path(raw)
+        return resolve_path(Path(self.checkpoint_root) / self.session_id / raw)
+
     def save_state(self, path: str | None = None, include_optimizer: bool = False) -> CheckpointRef:
-        target = resolve_path(path) if path else new_checkpoint_path(self.checkpoint_root, "state", self.step)
+        target = self._checkpoint_target(path, prefix="state")
         checkpoint = None
         try:
             if self.is_rank0:
@@ -1105,7 +1391,7 @@ class UnslothEngine:
         self.load_state(path, with_optimizer=True)
 
     def save_weights_for_sampler(self, path: str | None = None) -> SaveWeightsForSamplerResponse:
-        target = resolve_path(path) if path else new_checkpoint_path(self.checkpoint_root, "sampler", self.step)
+        target = self._checkpoint_target(path, prefix="sampler")
         checkpoint = None
         try:
             if self.is_rank0:

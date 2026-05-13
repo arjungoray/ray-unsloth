@@ -37,7 +37,7 @@ class ModelConfig:
     max_seq_length: int = 2048
     dtype: str = "bfloat16"
     load_in_4bit: bool = True
-    fast_inference: bool = True
+    fast_inference: bool | str = "auto"
     gpu_memory_utilization: float = 0.85
     trust_remote_code: bool = True
     device_map: Any | None = None
@@ -80,10 +80,32 @@ class ModelRuntimeConfig:
 class ResourceConfig:
     trainer_num_gpus: float = 1.0
     trainer_num_cpus: float = 1.0
+    trainer_replicas: int = 1
     sampler_num_gpus: float = 1.0
     sampler_num_cpus: float = 1.0
     sampler_replicas: int = 1
     placement_strategy: str = "PACK"
+
+
+@dataclass(slots=True)
+class SpeedConfig:
+    profile: str = "quality"
+    padding_free: str | bool = "auto"
+    sample_packing: str | bool = "auto"
+    optimizer: str = "adamw_8bit"
+    vllm_standby: str | bool = "auto"
+    flash_attention_2: str | bool = "auto"
+    live_policy_sampling: bool = True
+
+    def __post_init__(self) -> None:
+        if self.profile not in {"quality", "throughput"}:
+            raise ValueError("speed.profile must be 'quality' or 'throughput'.")
+        if self.optimizer not in {"adamw_8bit", "paged_adamw_8bit", "adamw_torch"}:
+            raise ValueError("speed.optimizer must be 'adamw_8bit', 'paged_adamw_8bit', or 'adamw_torch'.")
+        for field_name in ("padding_free", "sample_packing", "vllm_standby", "flash_attention_2"):
+            value = getattr(self, field_name)
+            if value not in {"auto", True, False}:
+                raise ValueError(f"speed.{field_name} must be 'auto', true, or false.")
 
 
 @dataclass(slots=True)
@@ -115,6 +137,8 @@ class ModalConfig:
     gpu: str = "L4"
     timeout: int = 1800
     scaledown_window: int = 300
+    max_inputs: int | None = None
+    trainer_pool_key: str | None = None
     volume_name: str = "ray-unsloth-checkpoints"
     volume_mount_path: str = "/checkpoints"
     python_version: str = "3.11"
@@ -128,6 +152,7 @@ class RuntimeConfig:
     default_model_config: str | None = None
     model_configs: dict[str, ModelRuntimeConfig] = field(default_factory=dict)
     resources: ResourceConfig = field(default_factory=ResourceConfig)
+    speed: SpeedConfig = field(default_factory=SpeedConfig)
     distributed: DistributedConfig = field(default_factory=DistributedConfig)
     modal: ModalConfig = field(default_factory=ModalConfig)
     checkpoint_root: str = "checkpoints"
@@ -176,6 +201,7 @@ class RuntimeConfig:
             default_model_config=default_model_config,
             model_configs=model_configs,
             resources=ResourceConfig(**data.get("resources", {})),
+            speed=SpeedConfig(**data.get("speed", {})),
             distributed=DistributedConfig(**data.get("distributed", {})),
             modal=ModalConfig(**data.get("modal", {})),
             checkpoint_root=data.get("checkpoint_root", "checkpoints"),

@@ -373,9 +373,7 @@ async def train(args: argparse.Namespace) -> None:
         t0 = time.time()
         start = (step * batch_size) % len(PROBLEMS)
         batch = [PROBLEMS[(start + offset) % len(PROBLEMS)] for offset in range(batch_size)]
-        sampling_client = await training_client.save_weights_and_get_sampling_client_async(
-            name=f"{sampler_name}-step-{step}"
-        )
+        sampling_client = await training_client.create_live_sampling_client_async(name=f"{sampler_name}-live")
 
         rollouts = await collect_rollouts(
             tokenizer=tokenizer,

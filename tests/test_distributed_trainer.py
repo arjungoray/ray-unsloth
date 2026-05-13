@@ -228,29 +228,51 @@ def test_coordinator_save_returns_rank0_result_and_calls_all_workers():
 
 
 def test_ray_session_default_training_actor_path_still_uses_trainer_actor(monkeypatch):
-    factory_calls = {}
+    factory_calls = {"options": [], "remote": []}
 
     class FakeTrainerActorFactory:
         def options(self, **options):
-            factory_calls["options"] = options
+            factory_calls["options"].append(options)
             return self
 
         def remote(self, **kwargs):
-            factory_calls["remote"] = kwargs
-            return "trainer-actor"
+            factory_calls["remote"].append(kwargs)
+            return f"trainer-actor-{len(factory_calls['remote'])}"
+
+    placement_groups = []
+
+    def fake_create_session_placement_group(self, **kwargs):
+        del self
+        group = f"group-{kwargs['session_id']}"
+        placement_groups.append((group, kwargs))
+        return group
+
+    def fake_strategy(self, bundle_index, placement_group):
+        del self
+        return f"strategy-{bundle_index}-{placement_group}"
 
     monkeypatch.setattr(ray_session, "TrainerActor", FakeTrainerActorFactory())
+    monkeypatch.setattr(ray_session.RaySession, "_create_session_placement_group", fake_create_session_placement_group)
+    monkeypatch.setattr(ray_session.RaySession, "_strategy", fake_strategy)
     session = ray_session.RaySession.__new__(ray_session.RaySession)
     session.config = RuntimeConfig.from_dict({})
     session._placement_group = None
     session.training_actors = {}
+    session._owned_actors = []
 
     session_id, actor = ray_session.RaySession.create_training_actor(session, base_model="base/model")
+    other_session_id, other_actor = ray_session.RaySession.create_training_actor(session, base_model="base/model")
 
     assert session_id.startswith("train-")
-    assert actor == "trainer-actor"
-    assert factory_calls["options"]["num_gpus"] == 1.0
-    assert factory_calls["remote"]["model_config"].base_model == "base/model"
+    assert other_session_id.startswith("train-")
+    assert session_id != other_session_id
+    assert actor == "trainer-actor-1"
+    assert other_actor == "trainer-actor-2"
+    assert placement_groups[0][1]["session_id"] == session_id
+    assert placement_groups[1][1]["session_id"] == other_session_id
+    assert factory_calls["options"][0]["num_gpus"] == 1.0
+    assert factory_calls["options"][0]["scheduling_strategy"].endswith(placement_groups[0][0])
+    assert factory_calls["remote"][0]["model_config"].base_model == "base/model"
 
 
 def test_modal_training_actor_carries_distributed_config_and_gpu_string():
@@ -258,7 +280,7 @@ def test_modal_training_actor_carries_distributed_config_and_gpu_string():
     session.config = RuntimeConfig.from_dict(
         {
             "distributed": {"enabled": True, "mode": "ddp", "gpus_per_node": 4},
-            "modal": {"enabled": True, "gpu": "H100:4"},
+            "modal": {"enabled": True, "gpu": "H100:4", "trainer_pool_key": "shared-trainers"},
         }
     )
     session.training_actors = {}
@@ -266,8 +288,61 @@ def test_modal_training_actor_carries_distributed_config_and_gpu_string():
     _session_id, actor = ModalSession.create_training_actor(session)
 
     assert session.config.modal.gpu == "H100:4"
+    assert actor.pool_id == "shared-trainers"
     assert actor.init_kwargs["distributed_config"].enabled is True
     assert actor.init_kwargs["distributed_config"].gpus_per_node == 4
+
+
+def test_modal_sampler_replicas_use_distinct_parameterized_pools():
+    session = ModalSession.__new__(ModalSession)
+    session.config = RuntimeConfig.from_dict({"resources": {"sampler_replicas": 2}})
+    session.sampler_actors = {}
+
+    _session_id, actors = ModalSession.create_sampler_actors(session)
+
+    assert [actor.replica_index for actor in actors] == [0, 1]
+    assert actors[0].session_id == actors[1].session_id
+
+
+def test_modal_training_actors_can_share_one_pool_with_separate_session_state():
+    session = ModalSession.__new__(ModalSession)
+    session.config = RuntimeConfig.from_dict({"modal": {"trainer_pool_key": "one-a100"}})
+    session.training_actors = {}
+
+    first_session_id, first = ModalSession.create_training_actor(session)
+    second_session_id, second = ModalSession.create_training_actor(session)
+
+    assert first_session_id != second_session_id
+    assert first.pool_id == "one-a100"
+    assert second.pool_id == "one-a100"
+    assert first.init_kwargs["session_id"] == first_session_id
+    assert second.init_kwargs["session_id"] == second_session_id
+
+
+def test_modal_trainer_invocations_take_container_lock(monkeypatch):
+    events = []
+
+    class FakeLock:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+
+    class FakeTrainer:
+        def forward_backward(self):
+            events.append("method")
+            assert events == ["enter", "method"]
+            return "ok"
+
+    modal_session._ENGINE_REGISTRY.clear()
+    modal_session._ENGINE_REGISTRY[("trainer", "train-locked", 0)] = FakeTrainer()
+    monkeypatch.setattr(modal_session, "_TRAINER_INVOCATION_LOCK", FakeLock())
+
+    result = modal_session._modal_invoke_impl("trainer", "train-locked", {}, "forward_backward", (), {})
+
+    assert result == "ok"
+    assert events == ["enter", "method", "exit"]
 
 
 def test_modal_function_is_single_container_for_stateful_actor_registry():
@@ -277,6 +352,7 @@ def test_modal_function_is_single_container_for_stateful_actor_registry():
                 "gpu": "L4:2",
                 "timeout": 123,
                 "scaledown_window": 45,
+                "max_inputs": 2,
                 "volume_mount_path": "/checkpoints",
             }
         }
@@ -288,6 +364,146 @@ def test_modal_function_is_single_container_for_stateful_actor_registry():
     assert kwargs["scaledown_window"] == 45
     assert kwargs["volumes"] == {"/checkpoints": "volume"}
     assert kwargs["max_containers"] == 1
+    assert kwargs["max_inputs"] == 2
+
+
+def test_modal_base_image_uses_debian_slim_with_flash_attention_wheel():
+    calls = []
+
+    class FakeImage:
+        def env(self, values):
+            calls.append(("env", values))
+            return self
+
+    class FakeModalImage:
+        @staticmethod
+        def from_registry(tag, add_python=None):
+            calls.append(("from_registry", tag, add_python))
+            return FakeImage()
+
+        @staticmethod
+        def debian_slim(python_version=None):
+            calls.append(("debian_slim", python_version))
+            return FakeImage()
+
+    class FakeModal:
+        Image = FakeModalImage
+
+    config = RuntimeConfig.from_dict({"modal": {"python_version": "3.11"}})
+
+    modal_session._modal_base_image(FakeModal, config, ["flash-attn @ https://example.test/flash_attn.whl"])
+
+    assert ("debian_slim", "3.11") in calls
+    assert not any(call[0] == "from_registry" for call in calls)
+
+
+def test_modal_base_image_uses_debian_slim_without_flash_attention():
+    calls = []
+
+    class FakeImage:
+        def env(self, values):
+            calls.append(("env", values))
+            return self
+
+    class FakeModalImage:
+        @staticmethod
+        def from_registry(tag, add_python=None):
+            calls.append(("from_registry", tag, add_python))
+            return FakeImage()
+
+        @staticmethod
+        def debian_slim(python_version=None):
+            calls.append(("debian_slim", python_version))
+            return FakeImage()
+
+    class FakeModal:
+        Image = FakeModalImage
+
+    config = RuntimeConfig.from_dict({"modal": {"python_version": "3.11"}})
+
+    modal_session._modal_base_image(FakeModal, config, [])
+
+    assert ("debian_slim", "3.11") in calls
+    assert not any(call[0] == "from_registry" for call in calls)
+
+
+def test_modal_python_packages_pin_latest_unsloth_compatible_vllm_stack():
+    config = RuntimeConfig.from_dict(
+        {
+            "model": {
+                "fast_inference": "auto",
+                "trust_remote_code": False,
+            }
+        }
+    )
+
+    torch_backend_packages = modal_session._modal_torch_backend_packages(config)
+    packages = modal_session._modal_python_packages(config)
+
+    assert "torch==2.10.0" in torch_backend_packages
+    assert "torchvision==0.25.0" in torch_backend_packages
+    assert "xformers==0.0.34" in torch_backend_packages
+    assert "packaging==26.2" in torch_backend_packages
+    assert "wheel==0.45.1" in torch_backend_packages
+    assert modal_session._modal_flash_attention_packages(config) == []
+    assert modal_session._modal_linear_attention_packages(config) == [
+        "flash-linear-attention==0.5.0",
+        "causal-conv1d @ "
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/"
+        "causal_conv1d-1.6.1%2Bcu13torch2.10cxx11abiTRUE-cp311-cp311-linux_x86_64.whl",
+    ]
+    assert "transformers==4.57.6" in packages
+    assert "trl==0.24.0" in packages
+    assert "huggingface_hub==0.36.2" in packages
+    assert "xformers==0.0.34" not in packages
+    assert modal_session.VLLM_CU130_WHEEL in torch_backend_packages
+    assert "vllm>=0.20.0" not in packages
+    assert "vllm>=0.20.0" not in torch_backend_packages
+
+
+def test_modal_python_packages_skip_vllm_for_trust_remote_code_auto_fast_inference():
+    config = RuntimeConfig.from_dict({"model": {"fast_inference": "auto", "trust_remote_code": True}})
+
+    torch_backend_packages = modal_session._modal_torch_backend_packages(config)
+
+    assert modal_session.VLLM_CU130_WHEEL not in torch_backend_packages
+
+
+def test_modal_python_packages_skip_vllm_and_use_transformers_5_for_qwen3_5():
+    config = RuntimeConfig.from_dict(
+        {
+            "model": {
+                "base_model": "Qwen/Qwen3.5-4B",
+                "fast_inference": "auto",
+                "trust_remote_code": False,
+            }
+        }
+    )
+
+    torch_backend_packages = modal_session._modal_torch_backend_packages(config)
+    flash_attention_packages = modal_session._modal_flash_attention_packages(config)
+    linear_attention_packages = modal_session._modal_linear_attention_packages(config)
+    packages = modal_session._modal_python_packages(config)
+
+    assert modal_session.VLLM_CU130_WHEEL not in torch_backend_packages
+    assert "torch==2.8.0" in torch_backend_packages
+    assert "torchvision==0.23.0" in torch_backend_packages
+    assert "xformers==0.0.32.post2" in torch_backend_packages
+    assert flash_attention_packages == [
+        "flash-attn @ "
+        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/"
+        "flash_attn-2.8.3%2Bcu12torch2.8cxx11abiTRUE-cp311-cp311-linux_x86_64.whl"
+    ]
+    assert linear_attention_packages == [
+        "flash-linear-attention==0.5.0",
+        "causal-conv1d @ "
+        "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4/"
+        "causal_conv1d-1.6.1%2Bcu12torch2.8cxx11abiTRUE-cp311-cp311-linux_x86_64.whl",
+    ]
+    assert "transformers==5.5.0" in packages
+    assert "huggingface_hub==1.14.0" in packages
+    assert "transformers==4.57.6" not in packages
+    assert "huggingface_hub==0.36.2" not in packages
 
 
 def test_modal_invoke_routes_ddp_trainers_to_coordinator(monkeypatch):
@@ -309,4 +525,4 @@ def test_modal_invoke_routes_ddp_trainers_to_coordinator(monkeypatch):
     )
 
     assert result == "distributed-base"
-    assert isinstance(modal_session._ENGINE_REGISTRY[("trainer", "train-ddp")], FakeCoordinator)
+    assert isinstance(modal_session._ENGINE_REGISTRY[("trainer", "train-ddp", 0)], FakeCoordinator)

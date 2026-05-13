@@ -31,16 +31,7 @@ from typing import Any
 
 import yaml
 
-from ray_unsloth import (
-    AdamParams,
-    Datum,
-    EncodedTextChunk,
-    ModelInput,
-    SamplingClient,
-    SamplingParams,
-    ServiceClient,
-    TensorData,
-)
+from ray_unsloth import AdamParams, Datum, EncodedTextChunk, ModelInput, SamplingParams, ServiceClient, TensorData
 
 
 warnings.filterwarnings("ignore", message="IProgress not found")
@@ -236,13 +227,6 @@ def load_local_settings(config_path: str | Path) -> dict[str, Any]:
     with Path(config_path).open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     return dict(data.get("examples", {}).get("qwen3_5_9b_rl_training", {}))
-
-
-def live_training_sampling_client(training_client: Any, *, name: str = "live-policy") -> SamplingClient:
-    actor = getattr(training_client, "_actor", None)
-    if actor is None:
-        raise TypeError("Training client does not expose a live actor for policy sampling")
-    return SamplingClient(session_id=f"{training_client.session_id}-{name}", actors=[actor])
 
 
 def token_ids_from_output(output: Any) -> list[int]:
@@ -757,7 +741,7 @@ async def train(args: argparse.Namespace) -> None:
             rank=LORA_RANK,
         )
         tokenizer = training_client.get_tokenizer()
-        sampling_client = live_training_sampling_client(training_client, name=sampler_name)
+        sampling_client = training_client.create_live_sampling_client(name=sampler_name)
         wandb_logger.log_progress("model_ready", step=0)
         adam_params = AdamParams(learning_rate=learning_rate, beta1=0.9, beta2=0.95)
         sampling_params = SamplingParams(max_tokens=max_tokens, temperature=temperature, top_p=top_p)

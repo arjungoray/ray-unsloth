@@ -766,7 +766,7 @@ async def train(args: argparse.Namespace) -> None:
             rank=LORA_RANK,
         )
         tokenizer = training_client.get_tokenizer()
-        sampling_client = _helpers.live_training_sampling_client(training_client, name=sampler_name)
+        sampling_client = training_client.create_live_sampling_client(name=sampler_name)
         wandb_logger.log_progress("model_ready", step=0)
         adam_params = AdamParams(learning_rate=learning_rate, beta1=0.9, beta2=0.95)
         sampling_params = SamplingParams(

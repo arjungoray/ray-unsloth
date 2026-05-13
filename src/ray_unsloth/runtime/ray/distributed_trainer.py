@@ -6,7 +6,7 @@ import os
 import socket
 from typing import Any
 
-from ray_unsloth.config import LoRAConfig, ModelConfig
+from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
 from ray_unsloth.runtime.unsloth import UnslothEngine
 from ray_unsloth.types import (
     AdamParams,
@@ -100,6 +100,7 @@ class DistributedTrainerWorker:
         model_config: ModelConfig,
         lora_config: LoRAConfig,
         checkpoint_root: str,
+        speed_config: SpeedConfig | None = None,
         rank: int,
         world_size: int,
         backend: str,
@@ -111,6 +112,7 @@ class DistributedTrainerWorker:
         self.model_config = model_config
         self.lora_config = lora_config
         self.checkpoint_root = checkpoint_root
+        self.speed_config = speed_config
         self.rank = rank
         self.world_size = world_size
         self.backend = backend
@@ -133,6 +135,7 @@ class DistributedTrainerWorker:
             model_config=self.model_config,
             lora_config=self.lora_config,
             checkpoint_root=self.checkpoint_root,
+            speed_config=self.speed_config,
             model_path=self.model_path,
             with_optimizer=self.with_optimizer,
             metadata=self.metadata,

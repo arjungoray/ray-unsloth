@@ -9,7 +9,7 @@ from ray_unsloth.clients.service import ServiceClient
 from ray_unsloth.clients.training import TrainingClient
 from ray_unsloth.clients._remote import call, call_async
 from ray_unsloth.config import ModelConfig
-from ray_unsloth.runtime.modal import ModalActorHandle
+from ray_unsloth.runtime.modal import ModalActorHandle, ModalSession
 from ray_unsloth.types import (
     CheckpointRef,
     ForwardBackwardOutput,
@@ -125,6 +125,7 @@ class FakeModalRuntime:
         return {
             "actor_kind": kwargs["actor_kind"],
             "session_id": kwargs["session_id"],
+            "pool_id": kwargs["pool_id"],
             "method_name": kwargs["method_name"],
             "args": kwargs["args"],
             "kwargs": kwargs["kwargs"],
@@ -225,13 +226,27 @@ def test_service_client_close_delegates_to_runtime_session(monkeypatch):
 
 def test_save_weights_and_get_sampling_client_reuses_training_actor():
     service = FakeService()
-    client = TrainingClient(session_id="train", actor=FakeTrainerActor(), service=service)
+    actor = FakeTrainerActor()
+    client = TrainingClient(session_id="train", actor=actor, service=service)
 
     sampler = client.save_weights_and_get_sampling_client()
 
     assert isinstance(sampler, SamplingClient)
     assert sampler.sample(ModelInput.from_ints([1]), sampling_params=SamplingParams(max_tokens=2)).result().sequences[0].text == "trained"
     assert service.model_path is None
+    assert actor.saved_sampler_path is None
+
+
+def test_create_live_sampling_client_reuses_training_actor_without_saving():
+    service = FakeService()
+    actor = FakeTrainerActor()
+    client = TrainingClient(session_id="train", actor=actor, service=service)
+
+    sampler = client.create_live_sampling_client(name="policy")
+
+    assert sampler.session_id == "train-policy"
+    assert sampler.sample(ModelInput.from_ints([1]), sampling_params=SamplingParams(max_tokens=2)).result().sequences[0].text == "trained"
+    assert actor.saved_sampler_path is None
 
 
 def test_save_weights_and_get_sampling_client_uses_service_for_replicas():
@@ -265,6 +280,17 @@ def test_service_client_selects_modal_session(monkeypatch):
 
     assert isinstance(client._session, FakeRuntimeSession)
     assert client.get_server_capabilities().features["runtime_backend"] == "modal"
+
+
+def test_service_client_reports_multi_trainer_capacity(monkeypatch):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+
+    client = ServiceClient(config={"resources": {"trainer_replicas": 4}})
+    capabilities = client.get_server_capabilities()
+
+    assert capabilities.supports_multi_trainer is True
+    assert capabilities.max_concurrent_trainers == 4
+    assert capabilities.features["trainer_replicas"] == 4
 
 
 def test_service_client_accepts_tinker_signature_and_metadata(monkeypatch):
@@ -325,6 +351,46 @@ def test_modal_actor_handle_matches_remote_call_shape():
     assert result["session_id"] == "train-1"
     assert result["method_name"] == "forward_backward"
     assert isinstance(result["args"][0][0], Datum)
+
+
+def test_modal_session_invoke_uses_parameterized_actor_class():
+    calls = []
+
+    class FakeRemote:
+        def remote(self, session_id, init_kwargs, method_name, args, kwargs):
+            calls.append(("remote", session_id, init_kwargs, method_name, args, kwargs))
+            return "ok"
+
+    class FakeParameterizedActor:
+        invoke = FakeRemote()
+
+    class FakeActorClass:
+        def __call__(self, **kwargs):
+            calls.append(("construct", kwargs))
+            return FakeParameterizedActor()
+
+    session = ModalSession.__new__(ModalSession)
+    session._actor_cls = FakeActorClass()
+
+    result = ModalSession.invoke(
+        session,
+        actor_kind="trainer",
+        session_id="train-1",
+        pool_id="shared-pool",
+        replica_index=2,
+        init_kwargs={"session_id": "train-1"},
+        method_name="get_info",
+        args=(),
+        kwargs={},
+    )
+
+    assert result == "ok"
+    assert calls[0] == (
+        "construct",
+        {"actor_kind": "trainer", "pool_id": "shared-pool", "replica_index": 2},
+    )
+    assert calls[1][1] == "train-1"
+    assert calls[1][2] == {"session_id": "train-1"}
 
 
 def test_modal_actor_handle_async_uses_async_invoke_shape():

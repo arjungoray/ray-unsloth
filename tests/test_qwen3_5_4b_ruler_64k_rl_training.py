@@ -31,8 +31,8 @@ def test_qwen3_5_4b_ruler_64k_config_uses_same_4b_model_and_long_context():
     assert config.model.base_model == "Qwen/Qwen3.5-4B"
     assert config.model.max_seq_length == 81920
     assert config.model.load_in_4bit is False
-    assert config.model.fast_inference is False
-    assert config.model.attn_implementation == "sdpa"
+    assert config.model.fast_inference == "auto"
+    assert config.model.attn_implementation == "flash_attention_2"
     assert config.lora.rank == 8
     assert settings["dataset_name"] == "tonychenxyz/ruler-full"
     assert settings["dataset_config"] == "plain"

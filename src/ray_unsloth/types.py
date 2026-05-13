@@ -681,6 +681,7 @@ class GetServerCapabilitiesResponse:
     supports_multi_sampler: bool = True
     supports_multi_trainer: bool = False
     max_sampler_replicas: int = 1
+    max_concurrent_trainers: int = 1
     max_batch_size: int | None = None
     features: dict[str, Any] = field(default_factory=dict)
 

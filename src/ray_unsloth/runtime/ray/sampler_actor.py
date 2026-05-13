@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ray_unsloth.config import LoRAConfig, ModelConfig
+from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
 from ray_unsloth.runtime.unsloth import UnslothEngine
 from ray_unsloth.types import ModelInput, SamplingParams
 
@@ -15,6 +15,7 @@ class SamplerActorImpl:
         model_config: ModelConfig,
         lora_config: LoRAConfig,
         checkpoint_root: str,
+        speed_config: SpeedConfig | None = None,
         model_path: str | None = None,
     ) -> None:
         self.engine = UnslothEngine(
@@ -22,6 +23,7 @@ class SamplerActorImpl:
             model_config=model_config,
             lora_config=lora_config,
             checkpoint_root=checkpoint_root,
+            speed_config=speed_config,
             model_path=model_path,
             with_optimizer=False,
         )

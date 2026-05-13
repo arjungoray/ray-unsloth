@@ -31,9 +31,10 @@ model_configs:
       max_seq_length: 2048
       dtype: bfloat16
       load_in_4bit: false
-      fast_inference: false
+      fast_inference: auto
       gpu_memory_utilization: 0.85
-      trust_remote_code: true
+      trust_remote_code: false
+      attn_implementation: xformers
     lora:
       rank: 16
       alpha: 16
@@ -55,10 +56,14 @@ model_configs:
 resources:
   trainer_num_gpus: 0.0
   trainer_num_cpus: 0.25
+  trainer_replicas: 1
   sampler_num_gpus: 0.0
   sampler_num_cpus: 0.25
   sampler_replicas: 1
   placement_strategy: PACK
+
+speed:
+  profile: quality
 
 distributed:
   enabled: false

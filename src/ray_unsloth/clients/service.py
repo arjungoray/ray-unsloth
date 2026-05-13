@@ -43,6 +43,7 @@ class ServiceClient:
             "lora",
             "model_configs",
             "resources",
+            "speed",
             "modal",
             "checkpoint_root",
             "supported_models",
@@ -53,12 +54,24 @@ class ServiceClient:
         supported = self.config.supported_model_names()
         return GetServerCapabilitiesResponse(
             supported_models=supported,
+            supports_multi_trainer=True,
             max_sampler_replicas=self.config.resources.sampler_replicas,
+            max_concurrent_trainers=self.config.resources.trainer_replicas,
             features={
                 "losses": ["cross_entropy"],
                 "checkpointing": True,
                 "ray_namespace": self.config.ray.namespace,
                 "runtime_backend": "modal" if self.config.modal.enabled else "ray",
+                "trainer_replicas": self.config.resources.trainer_replicas,
+                "speed": {
+                    "profile": self.config.speed.profile,
+                    "padding_free": self.config.speed.padding_free,
+                    "sample_packing": self.config.speed.sample_packing,
+                    "optimizer": self.config.speed.optimizer,
+                    "vllm_standby": self.config.speed.vllm_standby,
+                    "flash_attention_2": self.config.speed.flash_attention_2,
+                    "live_policy_sampling": self.config.speed.live_policy_sampling,
+                },
             },
         )
 

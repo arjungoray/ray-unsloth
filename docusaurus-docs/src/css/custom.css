@@ -1,0 +1,43 @@
+:root {
+  --ifm-color-primary: #1f6feb;
+  --ifm-color-primary-dark: #1a5fc9;
+  --ifm-color-primary-darker: #1859bd;
+  --ifm-color-primary-darkest: #144a9c;
+  --ifm-color-primary-light: #3b7fed;
+  --ifm-color-primary-lighter: #4a89ef;
+  --ifm-color-primary-lightest: #76a6f3;
+  --ifm-code-font-size: 95%;
+  --ifm-table-stripe-background: rgba(31, 111, 235, 0.05);
+}
+
+.theme-doc-markdown {
+  max-width: 980px;
+}
+
+.markdown h1:first-child {
+  letter-spacing: 0;
+}
+
+.markdown table {
+  display: table;
+  width: 100%;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.status-card {
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--ifm-background-surface-color);
+}
+
+.status-card strong {
+  display: block;
+  margin-bottom: 0.35rem;
+}
