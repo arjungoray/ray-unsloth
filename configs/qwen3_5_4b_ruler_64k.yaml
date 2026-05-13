@@ -31,10 +31,10 @@ model_configs:
       max_seq_length: 81920
       dtype: bfloat16
       load_in_4bit: false
-      fast_inference: false
+      fast_inference: auto
       gpu_memory_utilization: 0.90
-      trust_remote_code: true
-      attn_implementation: sdpa
+      trust_remote_code: false
+      attn_implementation: flash_attention_2
     lora:
       rank: 8
       alpha: 8
@@ -56,10 +56,14 @@ model_configs:
 resources:
   trainer_num_gpus: 0.0
   trainer_num_cpus: 0.25
+  trainer_replicas: 1
   sampler_num_gpus: 0.0
   sampler_num_cpus: 0.25
   sampler_replicas: 1
   placement_strategy: PACK
+
+speed:
+  profile: quality
 
 distributed:
   enabled: false

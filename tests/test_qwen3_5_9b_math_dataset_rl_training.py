@@ -27,7 +27,7 @@ def test_math_dataset_rl_example_uses_qwen3_5_model_and_cookbook_datasets():
     assert "HuggingFaceH4/MATH-500" in source
     assert "openai/gsm8k" in source
     assert 'loss_fn="importance_sampling"' in source
-    assert "live_training_sampling_client" in source
+    assert "create_live_sampling_client" in source
     assert "qwen3_5_9b_math_dataset_rl_training:" in config
     assert "dataset: math" in config
     assert "max_tokens: 8096" in config

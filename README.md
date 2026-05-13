@@ -142,6 +142,25 @@ python examples/qwen3_5_4b_math_dataset_rl_training.py \
 The 4B example logs cumulative W&B token counters under
 `tokens/prefill_total`, `tokens/sample_total`, and `tokens/train_total`.
 
+To exercise multi-tenant training on one GPU, run two concurrent Qwen3.5 4B
+LoRA SFT jobs on a single Modal-backed A100 40GB. The example creates two
+independent training clients for the same base model, routes them through one
+shared A100 container pool, logs one W&B run per tenant plus an orchestrator
+run, and saves sampler-ready adapters under separate session namespaces:
+
+```bash
+python examples/qwen3_5_4b_multitenant_sft.py \
+  --config configs/qwen3_5_4b_1x_a100_multitenant.yaml
+```
+
+For the same one-GPU multi-tenant shape with RL updates instead of SFT updates,
+run:
+
+```bash
+python examples/qwen3_5_4b_multitenant_rl.py \
+  --config configs/qwen3_5_4b_1x_a100_multitenant_rl.yaml
+```
+
 The default `configs/example.yaml` keeps Ray orchestration local and sends the
 Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
 adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests
@@ -156,7 +175,8 @@ python examples/sft_loop.py
 - Tinker-style public clients: `ServiceClient`, `TrainingClient`,
   `SamplingClient`, and a small local `RestClient` for checkpoint inspection.
 - Ray-backed trainer and sampler actors with configurable CPU/GPU resources,
-  namespaces, placement strategy, and sampler replica count.
+  namespaces, placement strategy, trainer concurrency, and sampler replica
+  count.
 - Modal-backed GPU execution for resource-efficient smoke tests while keeping
   the Python training loop and Ray orchestration local.
 - Unsloth model loading with LoRA configuration, 4-bit loading, dtype,
@@ -175,6 +195,8 @@ python examples/sft_loop.py
 - Client construction from fresh config, Tinker-style method signatures, saved
   training state, saved training state with optimizer, or exported sampler
   weights.
+- Multi-tenant LoRA training sessions for concurrent users training separate
+  adapters against the same base model on one GPU cluster.
 - Lightweight dataclass request and response types that are pickle-friendly for
   Ray, include Tinker-compatible aliases for common fields, and are easy to
   inspect in tests.
@@ -188,8 +210,8 @@ python examples/sft_loop.py
   reward-model-driven workflows.
 - Higher-level examples for multi-step SFT, evaluation, rollout collection, and
   policy optimization while keeping the low-level primitives available.
-- Stronger multi-actor orchestration, including multiple trainers, coordinated
-  sampler pools, and clearer lifecycle management for Ray sessions.
+- Stronger multi-actor orchestration, including coordinated sampler pools and
+  clearer lifecycle management for Ray sessions.
 - More complete checkpoint backends, such as cloud/object-store paths, checkpoint
   discovery beyond the local manifest index, and retention policies.
 - Richer model and tokenizer IO, including chat-template helpers, prompt/text

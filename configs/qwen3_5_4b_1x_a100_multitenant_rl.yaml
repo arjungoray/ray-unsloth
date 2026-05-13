@@ -1,0 +1,117 @@
+ray:
+  address: null
+  namespace: ray-unsloth
+  ignore_reinit_error: true
+
+model:
+  config: qwen3.5-4b
+
+lora:
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  random_state: 3407
+  use_rslora: false
+  bias: none
+  use_gradient_checkpointing: unsloth
+  loftq_config: null
+
+model_configs:
+  qwen3.5-4b:
+    model:
+      base_model: Qwen/Qwen3.5-4B
+      max_seq_length: 2048
+      dtype: bfloat16
+      load_in_4bit: false
+      fast_inference: auto
+      gpu_memory_utilization: 0.85
+      trust_remote_code: false
+      attn_implementation: flash_attention_2
+    lora:
+      rank: 16
+      alpha: 16
+      dropout: 0.0
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - o_proj
+        - gate_proj
+        - up_proj
+        - down_proj
+      random_state: 3407
+      use_rslora: false
+      bias: none
+      use_gradient_checkpointing: unsloth
+      loftq_config: null
+
+resources:
+  trainer_num_gpus: 0.0
+  trainer_num_cpus: 0.25
+  trainer_replicas: 3
+  sampler_num_gpus: 0.0
+  sampler_num_cpus: 0.25
+  sampler_replicas: 1
+  placement_strategy: PACK
+
+speed:
+  profile: quality
+
+distributed:
+  enabled: false
+  mode: null
+  num_nodes: 1
+  gpus_per_node: 1
+  backend: nccl
+  placement_strategy: STRICT_PACK
+
+examples:
+  qwen3_5_4b_multitenant_rl:
+    steps: 28
+    batch_size: 1
+    group_size: 3
+    learning_rate: 0.00004
+    max_tokens: 96
+    temperature: 0.8
+    top_p: 0.95
+    exploration_temperature: 1.0
+    exploration_top_p: 0.95
+    min_train_datums: 1
+    sft_anchor_weight: 0.2
+    rank: 16
+    wandb:
+      enabled: true
+      project: ray-unsloth-multitenant
+      name: qwen3.5-4b-1xa100-multitenant-rl
+      tags:
+        - rl
+        - qwen3.5
+        - qwen3.5-4b
+        - lora
+        - multi-tenant
+        - 1xa100
+      log_completions: 32
+
+modal:
+  enabled: true
+  app_name: ray-unsloth-multitenant
+  gpu: A100
+  timeout: 7200
+  scaledown_window: 300
+  max_inputs: 3
+  trainer_pool_key: qwen3.5-4b-a100-shared
+  volume_name: ray-unsloth-checkpoints
+  volume_mount_path: /checkpoints
+  python_version: "3.11"
+
+checkpoint_root: /checkpoints
+supported_models:
+  - qwen3.5-4b

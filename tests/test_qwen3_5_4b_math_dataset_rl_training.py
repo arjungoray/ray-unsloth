@@ -30,7 +30,7 @@ def test_qwen3_5_4b_config_uses_one_l4_and_4b_model():
     assert config.model.base_model == "Qwen/Qwen3.5-4B"
     assert config.model.max_seq_length == 2048
     assert config.model.load_in_4bit is False
-    assert config.model.fast_inference is False
+    assert config.model.fast_inference == "auto"
     assert config.lora.rank == 16
     assert settings["batch_size"] == 1
     assert settings["group_size"] == 4

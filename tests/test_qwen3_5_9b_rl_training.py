@@ -33,7 +33,7 @@ def test_qwen3_5_9b_rl_example_uses_sharded_config_defaults():
     assert "ServiceClient(config=args.config)" in source
     assert 'loss_fn="importance_sampling"' in source
     assert "save_weights_and_get_sampling_client" not in source
-    assert "live_training_sampling_client" in source
+    assert "create_live_sampling_client" in source
 
 
 def test_qwen3_5_9b_2x_l4_config_selects_modal_sharded_model():
@@ -47,7 +47,7 @@ def test_qwen3_5_9b_2x_l4_config_selects_modal_sharded_model():
     assert config.model.base_model == "unsloth/Qwen3.5-9B"
     assert config.model.max_seq_length == 2048
     assert config.model.load_in_4bit is False
-    assert config.model.fast_inference is False
+    assert config.model.fast_inference == "auto"
     assert config.model.device_map == "auto"
     assert config.lora.rank == 16
     assert config.lora.alpha == 16
@@ -172,14 +172,17 @@ def test_qwen3_5_9b_rollout_group_relative_advantages_when_rewards_vary(monkeypa
     assert client.calls[0].temperature == 0.8
 
 
-def test_live_training_sampling_client_reuses_training_actor_without_saving():
+def test_live_sampling_client_reuses_training_actor_without_saving():
     actor = object()
 
     class FakeTrainingClient:
         session_id = "train-123"
         _actor = actor
 
-    sampler = qwen3_5_9b_rl_training.live_training_sampling_client(FakeTrainingClient(), name="rl")
+        def create_live_sampling_client(self, name="live-policy"):
+            return SamplingClient(session_id=f"{self.session_id}-{name}", actors=[self._actor])
+
+    sampler = FakeTrainingClient().create_live_sampling_client(name="rl")
 
     assert isinstance(sampler, SamplingClient)
     assert sampler.session_id == "train-123-rl"

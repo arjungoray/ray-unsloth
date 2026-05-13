@@ -157,6 +157,12 @@ class TrainingClient:
     def create_sampling_client_async(self, model_path: str, retry_config: Any | None = None) -> SamplingClient:
         return self.create_sampling_client(model_path=model_path, retry_config=retry_config)
 
+    def create_live_sampling_client(self, name: str = "live-policy") -> SamplingClient:
+        return SamplingClient(session_id=f"{self.session_id}-{name}", actors=[self._actor])
+
+    def create_live_sampling_client_async(self, name: str = "live-policy") -> SamplingClient:
+        return self.create_live_sampling_client(name=name)
+
     def save_weights_and_get_sampling_client(
         self,
         path: str | None = None,
@@ -165,9 +171,11 @@ class TrainingClient:
         retry_config: Any | None = None,
         replicas: int | None = None,
     ) -> SamplingClient:
-        saved = resolve(self.save_weights_for_sampler(path, name=name))
         if replicas in (None, 1):
+            if path is not None or name is not None:
+                resolve(self.save_weights_for_sampler(path, name=name))
             return SamplingClient(session_id=f"{self.session_id}-sampler", actors=[self._actor])
+        saved = resolve(self.save_weights_for_sampler(path, name=name))
         return self._service.create_sampling_client(
             model_path=saved.path,
             retry_config=retry_config,
@@ -182,9 +190,11 @@ class TrainingClient:
         retry_config: Any | None = None,
         replicas: int | None = None,
     ) -> SamplingClient:
-        saved = await self.save_weights_for_sampler_async(path, name=name).result_async()
         if replicas in (None, 1):
+            if path is not None or name is not None:
+                await self.save_weights_for_sampler_async(path, name=name).result_async()
             return SamplingClient(session_id=f"{self.session_id}-sampler", actors=[self._actor])
+        saved = await self.save_weights_for_sampler_async(path, name=name).result_async()
         return self._service.create_sampling_client(
             model_path=saved.path,
             retry_config=retry_config,

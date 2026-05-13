@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ray_unsloth.config import LoRAConfig, ModelConfig
+from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
 from ray_unsloth.runtime.unsloth import UnslothEngine
 from ray_unsloth.types import AdamParams, CustomLoss, Datum, ModelInput, SamplingParams
 
@@ -17,6 +17,7 @@ class TrainerActorImpl:
         model_config: ModelConfig,
         lora_config: LoRAConfig,
         checkpoint_root: str,
+        speed_config: SpeedConfig | None = None,
         model_path: str | None = None,
         with_optimizer: bool = False,
         metadata: dict[str, Any] | None = None,
@@ -26,6 +27,7 @@ class TrainerActorImpl:
             model_config=model_config,
             lora_config=lora_config,
             checkpoint_root=checkpoint_root,
+            speed_config=speed_config,
             model_path=model_path,
             with_optimizer=with_optimizer,
             metadata=metadata or {},
