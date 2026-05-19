@@ -4,7 +4,13 @@ sidebar_position: 1
 
 # Supervised Fine-Tuning
 
-SFT trains the model to imitate target tokens. In `ray-unsloth`, SFT is just `cross_entropy` over `Datum` objects.
+SFT trains the model to imitate target tokens. In `ray-unsloth`, SFT is `cross_entropy` over `Datum` objects — the same primitive Tinker uses.
+
+<div class="doc-callout doc-callout--tip">
+
+Completed the [Quickstart](../quickstart.md)? This guide covers masking, batching, checkpointing, and the maintained SFT examples.
+
+</div>
 
 ## Minimal flow
 

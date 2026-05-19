@@ -4,7 +4,13 @@ sidebar_position: 2
 
 # Reinforcement Learning
 
-RL loops use the same clients as SFT. The difference is that you sample completions, score them, build policy datums with old-policy logprobs and advantages, then train with a policy loss.
+RL loops use the same clients as SFT. Sample completions, score them, build policy datums with old-policy logprobs and advantages, then train with a policy loss.
+
+<div class="doc-callout doc-callout--tip">
+
+Start with [Quickstart](../quickstart.md) if you haven't run a training step yet. For loss details see [Losses](../api/losses.md) and [Tinker API compatibility](../compare-tinker.md).
+
+</div>
 
 ## Minimal loop shape
 

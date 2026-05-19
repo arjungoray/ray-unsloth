@@ -4,7 +4,13 @@ sidebar_position: 3
 
 # Architecture
 
-The project has three layers: a Tinker-shaped Python API, a runtime orchestration layer, and a GPU-local Unsloth engine.
+Three layers: a **Tinker-shaped client API**, a **Ray/Modal runtime**, and a **Unsloth GPU engine**. Your Python loop calls the clients; the clients route to actors; the actors run Unsloth.
+
+<div class="doc-callout doc-callout--tip">
+
+New here? Run the [Quickstart](./quickstart.md) first, then come back for the full picture.
+
+</div>
 
 ## Layer 1: public client API
 

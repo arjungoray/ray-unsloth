@@ -3,80 +3,119 @@ sidebar_position: 1
 slug: /
 ---
 
-# ray-unsloth
+<div class="doc-hero">
 
-`ray-unsloth` is a Python package for running Tinker-shaped low-level fine-tuning primitives on infrastructure you control. The public API intentionally looks like the Tinker SDK: create a `ServiceClient`, create a LoRA `TrainingClient`, call `forward_backward`, call `optim_step`, save state or sampler weights, and sample from a `SamplingClient`.
+<span class="doc-hero__eyebrow">Documentation</span>
 
-The implementation is local-first:
+<h1 class="doc-hero__title">ray-unsloth</h1>
 
-- Ray is the orchestration layer for trainer and sampler actors.
-- Modal is an optional remote GPU runtime while the user loop and Ray control plane stay local.
-- Unsloth owns model loading, LoRA adapter injection, generation, forward/backward passes, optimizer execution, and adapter persistence.
-- The package also exposes a lightweight `tinker` import alias so many low-level Tinker examples can be adapted with minimal changes.
+<p class="doc-hero__lead">
+  Run Tinker-shaped fine-tuning primitives on infrastructure you control. Write the training loop in Python, orchestrate with Ray, train with Unsloth, and optionally offload GPUs to Modal — without the hosted Tinker service.
+</p>
 
-## What this project is
+<ul class="doc-hero__stack">
+  <li>Your Python loop</li>
+  <li>Ray actors</li>
+  <li>Unsloth + LoRA</li>
+  <li>Modal GPUs (optional)</li>
+</ul>
 
-`ray-unsloth` is a primitive layer, not a full trainer framework. It gives you the same rough control surface that researchers expect from Tinker-style APIs while keeping the implementation inspectable and runnable from this repository.
+</div>
 
-The project is strongest when you want to:
+## Start here
 
-- Write the training loop yourself in ordinary Python.
-- Run LoRA SFT or RL policy-gradient experiments.
-- Use Ray actors to isolate model state and GPU placement.
-- Use Modal as a GPU execution backend from a laptop.
-- Prototype Tinker-compatible loops without depending on the hosted Tinker service.
-- Keep checkpoints in local or Modal-volume-backed paths.
+<div class="card-grid">
 
-## What this project is not
+<a class="doc-card" href="./quickstart">
+  <strong>Quickstart</strong>
+  <span>Install, run your first SFT step, and pick an example workflow in under 10 minutes.</span>
+</a>
 
-This repository does not currently provide a complete dataset, experiment, evaluation, or hosted control-plane product. The examples include useful loops, but the core package intentionally exposes low-level operations rather than a high-level trainer abstraction.
+<a class="doc-card" href="./architecture">
+  <strong>Architecture</strong>
+  <span>How ServiceClient, Ray/Modal sessions, and UnslothEngine fit together.</span>
+</a>
 
-It also does not claim full Tinker SDK coverage. Compatibility is pragmatic: the public types, clients, and common low-level primitives are implemented where they are needed by this repo's examples and tests. See [Tinker API comparison](./compare-tinker.md) for a detailed matrix.
+<a class="doc-card" href="./guides/sft">
+  <strong>SFT guide</strong>
+  <span>Build supervised fine-tuning loops with cross-entropy and checkpointing.</span>
+</a>
+
+<a class="doc-card" href="./guides/rl">
+  <strong>RL guide</strong>
+  <span>Sample rollouts, compute advantages, and update with policy-gradient losses.</span>
+</a>
+
+<a class="doc-card" href="./configuration">
+  <strong>Configuration</strong>
+  <span>YAML runtime configs for local Ray, Modal L4/A100, sharding, and multi-tenant runs.</span>
+</a>
+
+<a class="doc-card" href="./compare-tinker">
+  <strong>Tinker API compatibility</strong>
+  <span>What is implemented, partial, or still to build compared to the public Tinker SDK.</span>
+</a>
+
+</div>
+
+## What you get
+
+`ray-unsloth` is a **primitive layer**, not a full trainer framework. You keep control of datasets, evaluation, and experiment logic. The package provides the same low-level surface researchers expect from Tinker:
+
+- **`ServiceClient`** — create training and sampling clients from YAML config
+- **`TrainingClient`** — `forward`, `forward_backward`, `optim_step`, checkpoint save/load
+- **`SamplingClient`** — generation, logprobs, tokenizer access
+- **`import tinker`** — compatibility alias for adapting cookbook examples
+
+<div class="doc-callout doc-callout--tip">
+
+**Best for:** custom SFT/RL loops, Ray GPU placement, Modal-backed runs from a laptop, and Tinker-compatible prototyping without hosted lock-in.
+
+</div>
+
+## Core flow
+
+```text
+your Python loop
+      │
+      ▼
+ServiceClient(config)
+      │
+      ├── RaySession ──────────► TrainerActor / SamplerActor
+      │
+      └── ModalSession ────────► GPU container ──► UnslothEngine
+                                              │
+                                              ▼
+                                   model + LoRA + optimizer
+```
+
+Typical SFT: create client → build `Datum` objects → `forward_backward("cross_entropy")` → `optim_step` → save weights → `sample`.
+
+Typical RL: sample rollouts → grade → build advantages → `forward_backward("importance_sampling" | "ppo" | "cispo")` → `optim_step`.
+
+See the [SFT](./guides/sft.md) and [RL](./guides/rl.md) guides for full walkthroughs.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `src/ray_unsloth` | Main package: clients, types, config, runtimes, checkpoints, Unsloth engine. |
-| `src/tinker` | Compatibility alias and exception/type shims for Tinker-style imports. |
-| `configs` | Runtime configs for local Ray, Modal L4/A100, multi-tenant runs, and long-context experiments. |
-| `examples` | SFT, RL, math-dataset RL, RULER long-context RL, overfit smoke, and multi-tenant examples. |
-| `tests` | Unit tests for public clients, data types, config/checkpoints, engine behavior, distributed orchestration, and examples. |
-| `docusaurus-docs` | This standalone Docusaurus documentation site. |
+| `src/ray_unsloth` | Clients, types, config, runtimes, checkpoints, Unsloth engine |
+| `src/tinker` | Compatibility alias and type shims for Tinker-style imports |
+| `configs` | Runtime configs for L4, A100, sharding, multi-tenant, long-context |
+| `examples` | SFT, RL, math RL, RULER 64k, overfit smoke, multi-tenant |
+| `tests` | Unit tests for clients, types, engine, distributed orchestration |
 
-## Core mental model
+## Headline capabilities
 
-```text
-user Python loop
-    |
-    v
-ServiceClient(config)
-    |
-    +-- RaySession -------------------> Ray TrainerActor / SamplerActor
-    |
-    +-- ModalSession -> Modal function -> in-container TrainerActorImpl / SamplerActorImpl
-                                      |
-                                      v
-                                UnslothEngine
-                                      |
-                                      v
-                         model + tokenizer + LoRA adapter + optimizer
-```
+- Tinker-shaped clients with local future wrappers (`.result()`, async aliases)
+- LoRA via Unsloth — 4-bit load, configurable target modules, RS-LoRA
+- SFT with `cross_entropy`; RL with `importance_sampling`, `ppo`, `cispo`, and custom losses
+- Live-policy sampling, multi-replica samplers, and atomic checkpoint manifests
+- Ray placement groups, optional Modal GPU backend, single-node DDP sharding
+- Multi-tenant examples — concurrent LoRA sessions on a shared GPU pool
 
-The user loop stays in control. `ray-unsloth` handles session creation, actor placement, model loading, method calls, checkpoint paths, and response types.
+<div class="doc-callout">
 
-## Current headline capabilities
+**Not included:** hosted control-plane features (auth, billing, remote session management), Tinker Cookbook pipeline abstractions, or a built-in dataset/eval framework. See [Tinker API compatibility](./compare-tinker.md) for the full matrix.
 
-- Tinker-style `ServiceClient`, `TrainingClient`, `SamplingClient`, and local `RestClient`.
-- LoRA model setup through Unsloth, configurable by YAML or dictionaries.
-- SFT with `cross_entropy`.
-- RL-style policy losses with `importance_sampling`, `ppo`, and `cispo`.
-- Custom backward losses through `register_custom_loss` and `forward_backward_custom`.
-- Sampling with `max_tokens`, temperature, top-p, top-k, seeds, stop strings, prompt logprobs, generated-token logprobs, and top-k prompt logprobs.
-- Ray actor orchestration with placement groups and configurable trainer/sampler resources.
-- Optional Modal GPU execution with local Ray orchestration.
-- Single-node DDP coordination for sharded training experiments.
-- Local and Modal-volume checkpointing with manifest files.
-- Multi-tenant LoRA examples that run multiple independent training sessions against a shared Modal GPU pool.
-
-Start with the [quickstart](./quickstart.md), then read [architecture](./architecture.md) and [API primitives](./api/service-client.md) when you need the exact control surface.
+</div>

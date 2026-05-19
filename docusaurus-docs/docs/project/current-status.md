@@ -4,73 +4,85 @@ sidebar_position: 1
 
 # Current Status
 
-This page separates what currently works from what is partial or in progress.
+What works today, what is partial, and what to expect before production use.
 
-## Currently works
+## At a glance
 
-<div className="status-grid">
-  <div className="status-card">
-    <strong>Tinker-shaped clients</strong>
-    Service, training, sampling, and local REST-style checkpoint clients are implemented.
+<div class="status-grid">
+  <div class="status-card">
+    <strong>Core training loop</strong>
+    SFT and RL primitives — forward, backward, optim, checkpoint, sample — are implemented end-to-end.
   </div>
-  <div className="status-card">
-    <strong>LoRA training</strong>
-    Unsloth-backed LoRA setup, cross-entropy SFT, policy losses, custom losses, and optimizer steps are implemented.
+  <div class="status-card">
+    <strong>Tinker client shape</strong>
+    Service, training, and sampling clients match the low-level Tinker API used by cookbook examples.
   </div>
-  <div className="status-card">
-    <strong>Sampling</strong>
-    Base-model, saved-weight, and live-policy sampling paths are implemented.
+  <div class="status-card">
+    <strong>Modal + Ray</strong>
+    Local orchestration with optional Modal GPU containers is production-tested in examples.
   </div>
-  <div className="status-card">
-    <strong>Modal runtime</strong>
-    Modal-backed GPU execution is implemented and used by configs/examples.
+  <div class="status-card">
+    <strong>Examples</strong>
+    SFT, RL, math datasets, 64k RULER, multi-tenant, and overfit smoke tests are maintained.
   </div>
 </div>
 
-## Implemented feature list
+## Implemented
 
-- `ray_unsloth` public package exports.
-- `tinker` compatibility import alias.
-- Tinker-style dataclasses for `ModelInput`, `Datum`, `TensorData`, sampling params, Adam params, responses, checkpoints, and capabilities.
-- Ray actor method wrappers that work with both Ray actors and local test doubles.
-- Ray session lifecycle with owned actors and placement group cleanup.
-- Modal actor handles with Ray-like `.remote` and `.remote_async` method surfaces.
-- Model/LoRA config aliases.
-- LoRA target module helper flags.
-- Attention backend auto-selection by GPU compute capability: FlashAttention 3 on Hopper (H100/H200/H800/H20/GH200), FlashAttention 2 on Ampere + Ada Lovelace (A100/A10/L4/L40/RTX 30xx/40xx/A-series/Ada-series), and xformers on older GPUs or when FA kernels are unavailable.
-- Fast inference/vLLM standby toggles where compatible.
-- Padding-free packed loss path with fallback.
-- BitsAndBytes AdamW variants with Torch AdamW fallback.
-- Cross-entropy, importance sampling, PPO, CISPO, and custom backward losses.
-- Generated-token logprobs, prompt logprobs, and top-k prompt logprobs.
-- Stop-string tokenization and trimming.
-- Atomic checkpoint directories with manifests.
-- Local checkpoint inspection APIs.
-- Single-node DDP coordinator and worker actors.
-- Multi-tenant Modal examples.
-- Math dataset and long-context RULER examples.
+### Clients & API
+
+- `ServiceClient`, `TrainingClient`, `SamplingClient`, local `RestClient`
+- `import tinker` compatibility alias and `tinker.types.*` shims
+- Future wrappers: `RayObjectFuture`, `ImmediateFuture`, `AsyncMethodFuture`, `FutureValueProxy`
+
+### Training & sampling
+
+- LoRA setup via Unsloth — 4-bit load, target modules, RS-LoRA, sequence length
+- Losses: `cross_entropy`, `importance_sampling`, `ppo`, `cispo`, custom backward
+- AdamW optimizer with gradient clipping (BitsAndBytes or PyTorch fallback)
+- Generation with temperature, top-p/k, stop strings, seeds, prompt and generated logprobs
+- Live-policy sampling, multi-replica samplers, round-robin routing
+
+### Runtime & infra
+
+- Ray session lifecycle, placement groups, trainer/sampler actor resources
+- Modal GPU backend with dynamic image construction
+- Single-node DDP coordinator for sharded training
+- Multi-tenant Modal examples (concurrent LoRA on shared GPU pool)
+- Attention backend auto-selection (FA2/FA3/xformers by GPU architecture)
+
+### Checkpoints
+
+- Atomic directory publishes with `manifest.json`
+- Local paths, Modal Volumes, `local://`, and `tinker://local/...` handling
+- Local manifest inspection via `RestClient`
 
 ## Partial support
 
-| Area | Current state |
-| --- | --- |
-| Tinker SDK compatibility | Good for low-level client/type shapes used by examples; not full SDK parity. |
-| Vision inputs | Type placeholders exist; engine paths are token/text-focused. |
-| REST API | Local manifest reader, not a network service. |
-| Distributed training | Single-node DDP only. |
-| Checkpoint storage | Local filesystem and Modal Volume oriented. |
-| Model catalog | Config-defined and dependent on local Unsloth/Transformers support. |
-| Cookbook abstractions | Examples only; no full cookbook framework clone. |
+| Area | Current state | What's missing |
+| --- | --- | --- |
+| [Tinker API parity](../compare-tinker.md) | Core train/sample/checkpoint loop works | Model introspection helpers, `dro`, RestClient archive/TTL, true ServiceClient async |
+| Vision inputs | Type placeholders exist | Engine paths are text/token focused |
+| RestClient | Local manifest reader | Pagination, remote archive URLs, delete/TTL |
+| Distributed training | Single-node DDP | Multi-node, fault tolerance |
+| Capability reporting | Returns local metadata | Under-advertises implemented RL losses |
 
 ## Known limitations
 
-- Hosted Tinker auth, projects, server-side storage, and rate-limit semantics are not implemented.
-- `get_server_capabilities().features["losses"]` currently advertises only `cross_entropy` even though the engine implements policy losses. This should be corrected.
-- No formal API stability guarantee yet.
-- No lockfile for the Docusaurus docs site unless generated by the user.
-- Some example configs are tuned for specific Modal GPU assumptions.
-- Real GPU integration coverage is not yet comprehensive.
+- No hosted control plane — auth, billing, remote sessions, and audit APIs are out of scope
+- Model catalog is config-defined and depends on your Unsloth/Transformers stack
+- Example configs assume specific Modal GPU types (L4, A100)
+- Unit tests are lightweight; real-GPU integration coverage is limited
+- No formal API stability guarantee yet
 
-## Recommended production posture
+## Recommended posture
 
-Treat the repository as an active experimental primitive layer. It is useful for controlled experiments, smoke tests, and research iteration. For production workloads, harden checkpointing, observability, integration tests, dependency pinning, and runtime failure handling first.
+Treat `ray-unsloth` as an **active experimental primitive layer**. It is well-suited for research iteration, smoke tests, and controlled experiments.
+
+Before production workloads, harden checkpoint retention, observability, dependency pinning, integration tests on target hardware, and runtime failure handling. See [Work in progress](./work-in-progress.md) for active hardening areas.
+
+## Quick links
+
+- [Tinker compatibility matrix](../compare-tinker.md) — implemented vs not yet
+- [Roadmap](./roadmap.md) — planned work
+- [Examples](../guides/examples.md) — runnable reference scripts

@@ -3,9 +3,10 @@
 const organizationName = 'arjungoray';
 const projectName = 'ray-unsloth';
 
+/** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'ray-unsloth',
-  tagline: 'Tinker-shaped low-level training primitives on Ray, Modal, and Unsloth',
+  tagline: 'Tinker-shaped training primitives on Ray, Modal, and Unsloth',
   url: 'https://arjungoray.github.io',
   baseUrl: '/ray-unsloth/',
   organizationName,
@@ -42,31 +43,54 @@ const config = {
   ],
 
   themeConfig: {
+    colorMode: {
+      defaultMode: 'light',
+      respectPrefersColorScheme: true,
+    },
     navbar: {
       title: 'ray-unsloth',
+      hideOnScroll: true,
       items: [
+        {
+          type: 'docSidebar',
+          sidebarId: 'tutorialSidebar',
+          position: 'left',
+          label: 'Docs',
+        },
         {to: '/quickstart', label: 'Quickstart', position: 'left'},
-        {to: '/project/current-status', label: 'Status', position: 'left'},
-        {to: '/compare-tinker', label: 'Tinker Compare', position: 'left'},
+        {to: '/compare-tinker', label: 'Tinker API', position: 'left'},
+        {
+          href: 'https://github.com/arjungoray/ray-unsloth',
+          label: 'GitHub',
+          position: 'right',
+        },
       ],
     },
     footer: {
       style: 'dark',
       links: [
         {
-          title: 'Docs',
+          title: 'Learn',
           items: [
             {label: 'Overview', to: '/'},
+            {label: 'Quickstart', to: '/quickstart'},
             {label: 'Architecture', to: '/architecture'},
-            {label: 'API Reference', to: '/api/service-client'},
           ],
         },
         {
-          title: 'Project',
+          title: 'Reference',
           items: [
+            {label: 'API', to: '/api/service-client'},
             {label: 'Configuration', to: '/configuration'},
+            {label: 'Tinker compatibility', to: '/compare-tinker'},
+          ],
+        },
+        {
+          title: 'Guides',
+          items: [
+            {label: 'SFT', to: '/guides/sft'},
+            {label: 'RL', to: '/guides/rl'},
             {label: 'Examples', to: '/guides/examples'},
-            {label: 'Roadmap', to: '/project/roadmap'},
           ],
         },
       ],
