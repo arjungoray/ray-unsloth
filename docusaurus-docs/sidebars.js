@@ -1,28 +1,18 @@
 // @ts-check
 
+/** @type {import('@docusaurus/plugin-content-docs').SidebarsConfig} */
 const sidebars = {
   tutorialSidebar: [
-    'intro',
-    'quickstart',
-    'architecture',
-    'tech-stack',
-    'configuration',
-    'compare-tinker',
     {
       type: 'category',
-      label: 'API Primitives',
-      items: [
-        'api/service-client',
-        'api/training-client',
-        'api/sampling-client',
-        'api/rest-client',
-        'api/types',
-        'api/losses',
-      ],
+      label: 'Getting Started',
+      collapsed: false,
+      items: ['intro', 'quickstart', 'architecture', 'configuration'],
     },
     {
       type: 'category',
       label: 'Guides',
+      collapsed: false,
       items: [
         'guides/sft',
         'guides/rl',
@@ -35,12 +25,25 @@ const sidebars = {
     },
     {
       type: 'category',
-      label: 'Project',
+      label: 'API Reference',
       items: [
-        'project/current-status',
-        'project/roadmap',
-        'project/work-in-progress',
+        'api/service-client',
+        'api/training-client',
+        'api/sampling-client',
+        'api/rest-client',
+        'api/types',
+        'api/losses',
       ],
+    },
+    {
+      type: 'category',
+      label: 'Compatibility',
+      items: ['compare-tinker', 'tech-stack'],
+    },
+    {
+      type: 'category',
+      label: 'Project',
+      items: ['project/current-status', 'project/roadmap', 'project/work-in-progress'],
     },
   ],
 };
