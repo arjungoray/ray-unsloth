@@ -1,12 +1,15 @@
 // @ts-check
 
+const organizationName = 'arjungoray';
+const projectName = 'ray-unsloth';
+
 const config = {
   title: 'ray-unsloth',
   tagline: 'Tinker-shaped low-level training primitives on Ray, Modal, and Unsloth',
-  url: 'https://ray-unsloth.local',
-  baseUrl: '/',
-  organizationName: 'ray-unsloth',
-  projectName: 'ray-unsloth',
+  url: 'https://arjungoray.github.io',
+  baseUrl: '/ray-unsloth/',
+  organizationName,
+  projectName,
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
