@@ -32,6 +32,7 @@ from typing import Any
 import yaml
 
 from ray_unsloth import AdamParams, Datum, EncodedTextChunk, ModelInput, SamplingParams, ServiceClient, TensorData
+from ray_unsloth.download import modal_volume_get_command
 
 
 warnings.filterwarnings("ignore", message="IProgress not found")
@@ -734,6 +735,7 @@ async def train(args: argparse.Namespace) -> None:
     )
 
     service_client = ServiceClient(config=args.config)
+    download_command: str | None = None
     try:
         wandb_logger.log_progress("model_create_started", step=0)
         training_client = await service_client.create_lora_training_client_async(
@@ -899,8 +901,15 @@ async def train(args: argparse.Namespace) -> None:
                 f"mean_logprob={mean_logprob:.3f} mean_ratio={mean_ratio:.3f} "
                 f"({elapsed:.1f}s)"
             )
+
+        download = await training_client.save_sampler_with_download_url_async(name=sampler_name)
+        download_command = modal_volume_get_command(service_client.config.modal.volume_name, download.archive_relpath)
     finally:
+        service_client.close()
         wandb_logger.finish()
+    if download_command is not None:
+        print("LoRA download:")
+        print(download_command)
 
 
 def main() -> None:

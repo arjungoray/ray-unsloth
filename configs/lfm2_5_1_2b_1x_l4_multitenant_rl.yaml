@@ -35,7 +35,7 @@ model_configs:
       fast_inference: auto
       gpu_memory_utilization: 0.85
       trust_remote_code: true
-      attn_implementation: flash_attention_2
+      attn_implementation: auto
     lora:
       rank: 16
       alpha: 16
@@ -81,7 +81,7 @@ examples:
     batch_size: 1
     group_size: 3
     learning_rate: 0.00004
-    max_tokens: 96
+    max_tokens: 2048
     temperature: 0.8
     top_p: 0.95
     exploration_temperature: 1.0

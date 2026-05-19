@@ -34,7 +34,7 @@ model_configs:
       fast_inference: auto
       gpu_memory_utilization: 0.85
       trust_remote_code: false
-      attn_implementation: xformers
+      attn_implementation: auto
     lora:
       rank: 16
       alpha: 16

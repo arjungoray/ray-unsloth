@@ -54,7 +54,7 @@ def test_qwen3_5_9b_2x_l4_config_selects_modal_sharded_model():
     assert settings["min_train_datums"] == 1
     assert settings["batch_size"] == 2
     assert settings["group_size"] == 4
-    assert settings["max_tokens"] == 96
+    assert settings["max_tokens"] == 2048
     assert settings["temperature"] == 0.8
     assert settings["top_p"] == 0.95
     assert settings["exploration_temperature"] == 1.0

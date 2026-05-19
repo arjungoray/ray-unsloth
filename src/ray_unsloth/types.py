@@ -635,6 +635,17 @@ class SaveWeightsForSamplerResponse:
 
 
 @dataclass(slots=True)
+class SamplerDownloadResponse:
+    path: str
+    archive_path: str
+    archive_relpath: str
+    token: str
+    expires_at: int
+    url: str | None = None
+    checkpoint: CheckpointRef | None = None
+
+
+@dataclass(slots=True)
 class ModelData:
     model_name: str
     model_id: str | None = None

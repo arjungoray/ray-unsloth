@@ -37,6 +37,7 @@ from ray_unsloth import (
     ServiceClient,
     TensorData,
 )
+from ray_unsloth.download import modal_volume_get_command
 
 
 warnings.filterwarnings("ignore", message="IProgress not found")
@@ -406,6 +407,12 @@ async def train(args: argparse.Namespace) -> None:
             f"mean_logprob={mean_logprob:.3f} mean_ratio={mean_ratio:.3f} "
             f"({elapsed:.1f}s)"
         )
+
+    download = await training_client.save_sampler_with_download_url_async(name=sampler_name)
+    download_command = modal_volume_get_command(service_client.config.modal.volume_name, download.archive_relpath)
+    service_client.close()
+    print("LoRA download:")
+    print(download_command)
 
 
 def main() -> None:

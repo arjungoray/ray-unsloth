@@ -362,8 +362,8 @@ def test_load_model_auto_attention_uses_xformers_on_t4(monkeypatch, tmp_path):
     assert calls["from_pretrained"]["attn_implementation"] == "xformers"
 
 
-def test_load_model_auto_attention_uses_xformers_on_l4(monkeypatch, tmp_path):
-    """L4 (sm_89) should use xformers."""
+def test_load_model_auto_attention_uses_flash_attention_2_on_l4(monkeypatch, tmp_path):
+    """L4/RTX 40-series (sm_89, Ada Lovelace) should use flash_attention_2."""
     calls = {}
 
     class LoadingFastLanguageModel:
@@ -379,6 +379,7 @@ def test_load_model_auto_attention_uses_xformers_on_l4(monkeypatch, tmp_path):
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: (8, 9))
+    monkeypatch.setattr("ray_unsloth.runtime.unsloth.engine._flash_attention_2_available", lambda: True)
     monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
 
     UnslothEngine(
@@ -393,7 +394,42 @@ def test_load_model_auto_attention_uses_xformers_on_l4(monkeypatch, tmp_path):
         checkpoint_root=str(tmp_path),
     )
 
-    assert calls["from_pretrained"]["attn_implementation"] == "xformers"
+    assert calls["from_pretrained"]["attn_implementation"] == "flash_attention_2"
+
+
+def test_load_model_auto_attention_uses_flash_attention_2_on_rtx_3090(monkeypatch, tmp_path):
+    """RTX 3090/A6000 (sm_86, Ampere consumer/workstation) should use flash_attention_2."""
+    calls = {}
+
+    class LoadingFastLanguageModel:
+        @staticmethod
+        def from_pretrained(**kwargs):
+            calls["from_pretrained"] = kwargs
+            return FakeModel(), FakeTokenizer()
+
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            calls["get_peft_model"] = kwargs
+            return model
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: (8, 6))
+    monkeypatch.setattr("ray_unsloth.runtime.unsloth.engine._flash_attention_2_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
+
+    UnslothEngine(
+        session_id="train-rtx3090",
+        model_config=ModelConfig(
+            fast_inference=False,
+            trust_remote_code=False,
+            attn_implementation="auto",
+        ),
+        lora_config=LoRAConfig(),
+        speed_config=SpeedConfig(flash_attention_2="auto"),
+        checkpoint_root=str(tmp_path),
+    )
+
+    assert calls["from_pretrained"]["attn_implementation"] == "flash_attention_2"
 
 
 def test_load_model_auto_attention_uses_flash_attention_2_on_a100(monkeypatch, tmp_path):

@@ -27,6 +27,7 @@ import yaml
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
 from ray_unsloth.clients._remote import resolve
 from ray_unsloth.clients.sampling import SamplingClient
+from ray_unsloth.download import modal_volume_get_command
 
 
 _SFT_PATH = Path(__file__).with_name("tinker_first_sft_training.py")
@@ -56,6 +57,7 @@ class TenantResult:
     name: str
     session_id: str
     sampler_path: str
+    download_command: str
     final_loss: float
     elapsed: float
 
@@ -307,6 +309,11 @@ async def train_one_tenant(
 
         sampler_name = f"{spec.name}-qwen3.5-4b-sft"
         saved = await training_client.save_weights_for_sampler_async(name=sampler_name).result_async()
+        download = await training_client.save_sampler_with_download_url_async(name=sampler_name)
+        download_command = modal_volume_get_command(
+            service_client.config.modal.volume_name,
+            download.archive_relpath,
+        )
         sampling_client = SamplingClient(
             session_id=f"{training_client.session_id}-live-sampler",
             actors=[training_client._actor],
@@ -341,6 +348,7 @@ async def train_one_tenant(
             name=spec.name,
             session_id=training_client.session_id,
             sampler_path=saved.path,
+            download_command=download_command,
             final_loss=final_loss,
             elapsed=time.time() - started,
         )
@@ -361,6 +369,7 @@ async def train(args: argparse.Namespace) -> None:
         run_config={"base_model": BASE_MODEL, "tenant_count": len(tenant_specs())},
     )
     service_client = ServiceClient(config=args.config)
+    results: list[TenantResult] = []
     try:
         capabilities = service_client.get_server_capabilities()
         orchestrator.log(
@@ -408,6 +417,11 @@ async def train(args: argparse.Namespace) -> None:
     finally:
         service_client.close()
         orchestrator.finish()
+    if results:
+        print("LoRA download commands:")
+        for result in results:
+            print(f"[{result.name}]")
+            print(result.download_command)
 
 
 def main() -> None:

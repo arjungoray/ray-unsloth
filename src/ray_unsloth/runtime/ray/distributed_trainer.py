@@ -233,6 +233,9 @@ class DistributedTrainerWorker:
     def save_weights_for_sampler(self, path: str | None = None):
         return self._engine().save_weights_for_sampler(path=path)
 
+    def save_sampler_with_download_url(self, path: str | None = None, ttl_seconds: int = 3600):
+        return self._engine().save_sampler_with_download_url(path=path, ttl_seconds=ttl_seconds)
+
 
 class DistributedTrainerCoordinator:
     """Coordinator with the same public method surface as TrainerActorImpl."""
@@ -357,6 +360,13 @@ class DistributedTrainerCoordinator:
 
     def save_weights_for_sampler(self, path: str | None = None):
         results = self._all("save_weights_for_sampler", [(path,) for _ in self.workers])
+        return results[0]
+
+    def save_sampler_with_download_url(self, path: str | None = None, ttl_seconds: int = 3600):
+        results = self._all(
+            "save_sampler_with_download_url",
+            [(path, ttl_seconds) for _ in self.workers],
+        )
         return results[0]
 
 

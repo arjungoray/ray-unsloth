@@ -17,6 +17,7 @@ import math
 import string
 
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
+from ray_unsloth.download import modal_volume_get_command
 
 
 DEFAULT_PROMPT = (
@@ -160,6 +161,12 @@ def main() -> None:
         f"generated_logprobs={len(feature_response.sequences[0].logprobs or [])}, "
         f"stop_reason={feature_response.sequences[0].stop_reason!r}."
     )
+
+    download = training.save_sampler_with_download_url()
+    download_command = modal_volume_get_command(service.config.modal.volume_name, download.archive_relpath)
+    service.close()
+    print("LoRA download:")
+    print(download_command)
 
 
 if __name__ == "__main__":

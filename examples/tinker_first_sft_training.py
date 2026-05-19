@@ -25,6 +25,7 @@ from typing import Any
 import yaml
 
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient, TensorData
+from ray_unsloth.download import modal_volume_get_command
 
 
 warnings.filterwarnings("ignore", message="IProgress not found")
@@ -386,6 +387,12 @@ async def train(args: argparse.Namespace) -> None:
         answer = result.sequences[0].text or decode_tokens(tokenizer, result.sequences[0].tokens)
         print(f"Q: {question}")
         print(f"A: {answer}\n")
+
+    download = await training_client.save_sampler_with_download_url_async(name=sampler_name)
+    download_command = modal_volume_get_command(service_client.config.modal.volume_name, download.archive_relpath)
+    service_client.close()
+    print("LoRA download:")
+    print(download_command)
 
 
 def main() -> None:

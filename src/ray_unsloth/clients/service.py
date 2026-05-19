@@ -179,6 +179,13 @@ class ServiceClient:
 
         return RestClient(config=self.config)
 
+    def attach_sampler_download_url(self, response):
+        """Fill the download URL on a SamplerDownloadResponse if the session can serve one."""
+        builder = getattr(self._session, "build_sampler_download_url", None)
+        if callable(builder) and getattr(response, "url", None) is None:
+            response.url = builder(response.archive_relpath, response.token, response.expires_at)
+        return response
+
     def close(self) -> None:
         close = getattr(self._session, "close", None)
         if callable(close):

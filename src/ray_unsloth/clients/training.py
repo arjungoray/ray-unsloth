@@ -151,6 +151,37 @@ class TrainingClient:
         path = path or name
         return call_async(self._actor, "save_weights_for_sampler", path)
 
+    def save_sampler_with_download_url(
+        self,
+        path: str | None = None,
+        *,
+        name: str | None = None,
+        ttl_seconds: int = 3600,
+    ):
+        path = path or name
+        response = resolve(call(self._actor, "save_sampler_with_download_url", path, ttl_seconds))
+        if response is not None and self._service is not None:
+            attach = getattr(self._service, "attach_sampler_download_url", None)
+            if callable(attach):
+                response = attach(response)
+        return response
+
+    async def save_sampler_with_download_url_async(
+        self,
+        path: str | None = None,
+        *,
+        name: str | None = None,
+        ttl_seconds: int = 3600,
+    ):
+        path = path or name
+        future = call_async(self._actor, "save_sampler_with_download_url", path, ttl_seconds)
+        response = await future.result_async()
+        if response is not None and self._service is not None:
+            attach = getattr(self._service, "attach_sampler_download_url", None)
+            if callable(attach):
+                response = attach(response)
+        return response
+
     def create_sampling_client(self, model_path: str, retry_config: Any | None = None) -> SamplingClient:
         return self._service.create_sampling_client(model_path=model_path, retry_config=retry_config)
 

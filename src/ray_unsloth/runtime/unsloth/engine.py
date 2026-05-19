@@ -31,9 +31,16 @@ from ray_unsloth.types import (
     OptimStepResult,
     SampleResponse,
     SamplingParams,
+    SamplerDownloadResponse,
     SaveWeightsForSamplerResponse,
     TensorData,
     TrainingClientInfo,
+)
+from ray_unsloth.download import (
+    archive_relpath as _archive_relpath,
+    load_or_create_secret,
+    make_token,
+    pack_lora_archive,
 )
 
 
@@ -168,6 +175,28 @@ class UnslothEngine:
     def _unwrap_model(self):
         return getattr(self.model, "module", self.model)
 
+    def _generation_config_for_new_tokens(self, model):
+        """Return a clone of the model's generation_config with max_length cleared.
+
+        Why: long-context models (e.g. 64k/128k Qwen variants) ship a
+        generation_config with max_length set, which collides with our
+        per-call max_new_tokens and triggers a Transformers warning. Cloning
+        and clearing keeps everything else (eos, stop strings, etc.) intact.
+        """
+        source = getattr(model, "generation_config", None)
+        if source is None:
+            return None
+        try:
+            import copy
+
+            cloned = copy.deepcopy(source)
+        except Exception:
+            return None
+        if getattr(cloned, "max_length", None) is None:
+            return None
+        cloned.max_length = None
+        return cloned
+
     def _model_device(self):
         import torch
 
@@ -286,19 +315,23 @@ class UnslothEngine:
         """Select the best attention backend for the current GPU.
 
         Tiered selection based on GPU architecture and installed kernels:
-          - compute capability >= 9.0 (H100/B200):  flash_attention_3 when available
-          - compute capability == 8.0 (A100):        flash_attention_2 when available
+          - compute capability >= 9.0 (Hopper: H100/H200/H800/H20/GH200):
+                flash_attention_3 when available
+          - compute capability major == 8 (Ampere sm_80/sm_86 and Ada
+                Lovelace sm_89: A100/A800/A40/A30/A10/A10G/A2, RTX A-series,
+                RTX 30-series, L4/L40/L40S, RTX Ada-series, RTX 40-series):
+                flash_attention_2 when available
           - all other GPUs or missing FA kernels:    xformers
         """
         cap = self._gpu_compute_capability()
         if cap is None:
             return None
-        major, minor = cap
+        major, _minor = cap
 
         if major >= 9 and _flash_attention_3_available():
             return "flash_attention_3"
 
-        if major == 8 and minor == 0 and _flash_attention_2_available():
+        if major == 8 and _flash_attention_2_available():
             return "flash_attention_2"
 
         return "xformers"
@@ -989,6 +1022,9 @@ class UnslothEngine:
             "output_scores": sampling_params.logprobs_max_tokens is not None,
             "pad_token_id": pad_token_id,
         }
+        generation_config = self._generation_config_for_new_tokens(model)
+        if generation_config is not None:
+            kwargs["generation_config"] = generation_config
         if sampling_params.max_time is not None:
             kwargs["max_time"] = float(sampling_params.max_time)
         if sampling_params.temperature > 0:
@@ -1401,3 +1437,33 @@ class UnslothEngine:
         if checkpoint is None:
             return None
         return SaveWeightsForSamplerResponse(path=checkpoint.path, checkpoint=checkpoint)
+
+    def save_sampler_with_download_url(
+        self,
+        path: str | None = None,
+        ttl_seconds: int = 3600,
+    ) -> SamplerDownloadResponse | None:
+        """Save LoRA weights and emit a signed download URL for the tarball.
+
+        Why: lets callers pull adapter weights off the remote volume without
+        round-tripping the bytes through the actor invoke channel.
+        """
+        import time
+
+        save = self.save_weights_for_sampler(path=path)
+        if save is None:
+            return None
+        archive = pack_lora_archive(save.path)
+        secret = load_or_create_secret(self.checkpoint_root)
+        relpath = _archive_relpath(archive, self.checkpoint_root)
+        expires_at = int(time.time()) + max(60, int(ttl_seconds))
+        token = make_token(relpath, expires_at, secret)
+        return SamplerDownloadResponse(
+            path=save.path,
+            archive_path=str(archive),
+            archive_relpath=relpath,
+            token=token,
+            expires_at=expires_at,
+            url=None,
+            checkpoint=save.checkpoint,
+        )

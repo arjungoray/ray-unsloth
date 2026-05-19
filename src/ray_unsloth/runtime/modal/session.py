@@ -309,6 +309,112 @@ def _modal_actor_service_invoke(self, session_id, init_kwargs, method_name, args
     )
 
 
+DOWNLOAD_MOUNT_ENV_VAR = "RAY_UNSLOTH_DOWNLOAD_MOUNT_PATH"
+
+
+def ray_unsloth_download_lora(archive: str, expires: int, token: str):
+    """Volume-streaming handler invoked by the Modal web endpoint.
+
+    Why: defined at module scope (not as a closure) because Modal requires
+    functions to be globally importable, and ``serialized=True`` ties the
+    function to the local Python version. Reads the mount path from an env
+    var the image is built with.
+    """
+    import os
+
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    from ray_unsloth.download import load_or_create_secret, resolve_archive, verify_token
+
+    mount_path = os.environ.get(DOWNLOAD_MOUNT_ENV_VAR, "/checkpoints")
+    secret = load_or_create_secret(mount_path)
+    if not verify_token(archive, int(expires), token, secret):
+        raise HTTPException(status_code=403, detail="Invalid or expired token")
+    try:
+        path = resolve_archive(archive, mount_path)
+    except PermissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Archive not found")
+    return FileResponse(
+        str(path),
+        media_type="application/gzip",
+        filename=path.name,
+    )
+
+
+DOWNLOAD_APP_SUFFIX = "-downloads"
+DOWNLOAD_FUNCTION_NAME = "ray_unsloth_download_lora"
+
+
+def _build_download_app(*, modal, app_name: str, volume_name: str, mount_path: str, timeout: int, python_version: str):
+    """Build (but don't deploy) the persistent download app.
+
+    Why: a separate app lets the download endpoint outlive the ephemeral
+    training ``app.run()`` so signed URLs keep working after training ends.
+    """
+    app = modal.App(app_name)
+    volume = modal.Volume.from_name(volume_name, create_if_missing=True)
+
+    source_root = Path(__file__).resolve().parents[3]
+    package_dir = source_root / "ray_unsloth"
+    image = (
+        modal.Image.debian_slim(python_version=python_version)
+        .pip_install("fastapi[standard]==0.115.0")
+        .env({DOWNLOAD_MOUNT_ENV_VAR: mount_path, "PYTHONPATH": "/root/ray_unsloth_src"})
+    )
+    if hasattr(image, "add_local_dir"):
+        image = image.add_local_dir(
+            str(package_dir),
+            remote_path="/root/ray_unsloth_src/ray_unsloth",
+            copy=True,
+        )
+
+    endpoint_decorator = getattr(modal, "fastapi_endpoint", None) or getattr(modal, "web_endpoint", None)
+    if endpoint_decorator is None:
+        return app, None
+
+    decorated = endpoint_decorator(method="GET", docs=False)(ray_unsloth_download_lora)
+    fn = app.function(
+        image=image,
+        volumes={mount_path: volume},
+        timeout=timeout,
+        max_containers=2,
+        name=DOWNLOAD_FUNCTION_NAME,
+    )(decorated)
+    return app, fn
+
+
+def _ensure_download_endpoint(*, modal, app_name: str, volume_name: str, mount_path: str, timeout: int, python_version: str):
+    """Look up an existing deployed download function, or deploy it.
+
+    Why: deploys are idempotent but slow; if the function is already live
+    we skip deployment so ServiceClient init stays cheap.
+    """
+    try:
+        return modal.Function.from_name(app_name, DOWNLOAD_FUNCTION_NAME)
+    except Exception:
+        pass
+
+    app, _fn = _build_download_app(
+        modal=modal,
+        app_name=app_name,
+        volume_name=volume_name,
+        mount_path=mount_path,
+        timeout=timeout,
+        python_version=python_version,
+    )
+    try:
+        app.deploy(name=app_name)
+    except TypeError:
+        app.deploy()
+    try:
+        return modal.Function.from_name(app_name, DOWNLOAD_FUNCTION_NAME)
+    except Exception:
+        return None
+
+
 try:
     import modal as _modal
 except ImportError:  # pragma: no cover - modal is optional until runtime use
@@ -495,7 +601,31 @@ class ModalSession:
         actor_cls = app.cls(**function_kwargs)(_modal_actor_service_class(modal))
         if max_inputs is not None:
             actor_cls = actor_cls.with_concurrency(max_inputs=max_inputs)
+
+        self._download_fn = _ensure_download_endpoint(
+            modal=modal,
+            app_name=f"{modal_config.app_name}{DOWNLOAD_APP_SUFFIX}",
+            volume_name=modal_config.volume_name,
+            mount_path=modal_config.volume_mount_path,
+            timeout=modal_config.timeout,
+            python_version=modal_config.python_version,
+        )
         return app, actor_cls
+
+    def build_sampler_download_url(self, archive_relpath: str, token: str, expires_at: int) -> str | None:
+        fn = getattr(self, "_download_fn", None)
+        if fn is None:
+            return None
+        try:
+            base = fn.get_web_url()
+        except Exception:
+            return None
+        if not base:
+            return None
+        from urllib.parse import urlencode
+
+        query = urlencode({"archive": archive_relpath, "expires": expires_at, "token": token})
+        return f"{base}?{query}"
 
     def _start_app(self) -> None:
         import modal

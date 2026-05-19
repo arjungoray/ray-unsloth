@@ -101,6 +101,9 @@ class TrainerActorImpl:
     def save_weights_for_sampler(self, path: str | None = None):
         return self.engine.save_weights_for_sampler(path=path)
 
+    def save_sampler_with_download_url(self, path: str | None = None, ttl_seconds: int = 3600):
+        return self.engine.save_sampler_with_download_url(path=path, ttl_seconds=ttl_seconds)
+
 
 try:
     import ray

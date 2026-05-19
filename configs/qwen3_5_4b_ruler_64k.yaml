@@ -34,7 +34,7 @@ model_configs:
       fast_inference: auto
       gpu_memory_utilization: 0.90
       trust_remote_code: false
-      attn_implementation: flash_attention_2
+      attn_implementation: auto
     lora:
       rank: 8
       alpha: 8
