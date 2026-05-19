@@ -12,6 +12,18 @@ Start with [Quickstart](../quickstart.md) if you haven't run a training step yet
 
 </div>
 
+## Training loop
+
+```mermaid
+flowchart TD
+    A["Sample rollouts"] --> B["Grade completions"]
+    B --> C["Compute advantages"]
+    C --> D["Build policy Datum<br/>target_tokens, logprobs, advantages"]
+    D --> E["forward_backward<br/>(IS | PPO | CISPO)"]
+    E --> F["optim_step"]
+    F --> A
+```
+
 ## Minimal loop shape
 
 ```python

@@ -15,10 +15,13 @@ const config = {
 
   onBrokenLinks: 'throw',
   markdown: {
+    mermaid: true,
     hooks: {
       onBrokenMarkdownLinks: 'warn',
     },
   },
+
+  themes: ['@docusaurus/theme-mermaid'],
 
   i18n: {
     defaultLocale: 'en',
@@ -102,6 +105,9 @@ const config = {
     tableOfContents: {
       minHeadingLevel: 2,
       maxHeadingLevel: 4,
+    },
+    mermaid: {
+      theme: {light: 'base', dark: 'base'},
     },
   },
 };

@@ -12,6 +12,16 @@ Completed the [Quickstart](../quickstart.md)? This guide covers masking, batchin
 
 </div>
 
+## Training loop
+
+```mermaid
+flowchart LR
+    A["Tokenize prompt + completion"] --> B["Build Datum<br/>loss_fn_inputs: labels"]
+    B --> C["forward_backward<br/>(cross_entropy)"]
+    C --> D["optim_step"]
+    D --> E["save_state / sample"]
+```
+
 ## Minimal flow
 
 ```python

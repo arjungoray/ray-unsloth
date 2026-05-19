@@ -34,8 +34,23 @@ This page tracks **training-relevant** parity between [the public Tinker SDK](ht
 
 Core training workflows from the [Tinker quickstart](https://tinker-docs.thinkingmachines.ai/tinker/quickstart/) are supported:
 
-- **SFT:** `create_lora_training_client` → `forward_backward("cross_entropy")` → `optim_step` → save → `sample`
-- **RL:** sample rollouts → rewards/logprobs → `forward_backward("importance_sampling" | "ppo" | "cispo")` → `optim_step`
+```mermaid
+flowchart TB
+    subgraph sft["SFT workflow"]
+        direction TB
+        S1["create_lora_training_client"] --> S2["forward_backward(cross_entropy)"]
+        S2 --> S3["optim_step"]
+        S3 --> S4["save weights → sample"]
+    end
+
+    subgraph rl["RL workflow"]
+        direction TB
+        R1["sample rollouts"] --> R2["reward + logprobs"]
+        R2 --> R3["forward_backward(IS | PPO | CISPO)"]
+        R3 --> R4["optim_step"]
+        R4 --> R1
+    end
+```
 
 ---
 

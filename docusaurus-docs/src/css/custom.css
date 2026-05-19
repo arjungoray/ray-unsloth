@@ -315,3 +315,40 @@
   color: var(--ray-muted);
   font-size: 0.82rem;
 }
+
+/* Mermaid diagrams */
+.theme-doc-markdown .docusaurus-mermaid-container,
+.theme-doc-markdown .mermaid {
+  margin: 1.5rem 0 2rem;
+  padding: 1.35rem 1rem 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--ray-border);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.06), transparent 55%),
+    var(--ray-surface);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme='dark'] .theme-doc-markdown .docusaurus-mermaid-container,
+[data-theme='dark'] .theme-doc-markdown .mermaid {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+.theme-doc-markdown .docusaurus-mermaid-container svg,
+.theme-doc-markdown .mermaid svg {
+  display: block;
+  max-width: 100%;
+  height: auto !important;
+  margin: 0 auto;
+}
+
+.theme-doc-markdown .docusaurus-mermaid-container .edgeLabel,
+.theme-doc-markdown .mermaid .edgeLabel {
+  font-size: 0.82rem;
+}
+
+.theme-doc-markdown .docusaurus-mermaid-container .cluster-label,
+.theme-doc-markdown .mermaid .cluster-label {
+  font-weight: 700;
+}

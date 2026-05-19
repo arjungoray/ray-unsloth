@@ -75,18 +75,22 @@ slug: /
 
 ## Core flow
 
-```text
-your Python loop
-      │
-      ▼
-ServiceClient(config)
-      │
-      ├── RaySession ──────────► TrainerActor / SamplerActor
-      │
-      └── ModalSession ────────► GPU container ──► UnslothEngine
-                                              │
-                                              ▼
-                                   model + LoRA + optimizer
+```mermaid
+flowchart TD
+    A["Your Python loop"] --> B["ServiceClient(config)"]
+    B --> C{Runtime}
+    C -->|Ray| D["TrainerActor / SamplerActor"]
+    C -->|Modal| E["GPU container"]
+    E --> F["UnslothEngine"]
+    D --> F
+    F --> G["Model + LoRA + Optimizer"]
+
+    classDef user fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
+    classDef runtime fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#065f46
+    classDef engine fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#5b21b6
+    class A user
+    class B,C,D,E runtime
+    class F,G engine
 ```
 
 Typical SFT: create client → build `Datum` objects → `forward_backward("cross_entropy")` → `optim_step` → save weights → `sample`.

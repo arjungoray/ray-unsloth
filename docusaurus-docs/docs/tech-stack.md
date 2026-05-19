@@ -47,25 +47,34 @@ npm run build
 
 ## Source package layout
 
-```text
-src/ray_unsloth/
-  clients/
-    service.py       # ServiceClient control-plane facade
-    training.py      # TrainingClient facade
-    sampling.py      # SamplingClient facade
-    rest.py          # local checkpoint inspection facade
-    _remote.py       # Ray/local call wrappers
-  runtime/
-    ray/             # Ray actors, session, DDP coordinator
-    modal/           # Modal-backed actor handle/session
-    unsloth/         # GPU-local model engine
-  checkpoints.py     # atomic checkpoint helpers
-  config.py          # runtime dataclasses and YAML parsing
-  errors.py          # project exceptions
-  types.py           # Tinker-shaped request/response dataclasses
-src/tinker/
-  __init__.py        # compatibility import alias
-  types.py           # compatibility submodule registration
+```mermaid
+flowchart TB
+    subgraph pkg["src/ray_unsloth"]
+        subgraph clients["clients/"]
+            service["service.py"]
+            training["training.py"]
+            sampling["sampling.py"]
+            rest["rest.py"]
+            remote["_remote.py"]
+        end
+        subgraph runtime["runtime/"]
+            ray["ray/"]
+            modal["modal/"]
+            unsloth["unsloth/"]
+        end
+        checkpoints["checkpoints.py"]
+        config["config.py"]
+        errors["errors.py"]
+        types["types.py"]
+    end
+
+    subgraph tinker["src/tinker"]
+        alias["__init__.py · alias"]
+        ttypes["types.py · shims"]
+    end
+
+    clients --> runtime
+    runtime --> unsloth
 ```
 
 ## Model execution stack

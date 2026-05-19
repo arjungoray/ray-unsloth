@@ -6,6 +6,16 @@ sidebar_position: 6
 
 Losses are selected by the `loss_fn` string passed to `forward` or `forward_backward`.
 
+```mermaid
+flowchart LR
+    A["Datum + loss_fn_inputs"] --> B{loss_fn}
+    B -->|cross_entropy| C["SFT"]
+    B -->|importance_sampling| D["RL · IS"]
+    B -->|ppo| E["RL · PPO"]
+    B -->|cispo| F["RL · CISPO"]
+    B -->|custom| G["forward_backward_custom"]
+```
+
 ## Cross entropy
 
 ```python
