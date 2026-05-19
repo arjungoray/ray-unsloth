@@ -24,7 +24,7 @@ def test_multitenant_config_uses_one_shared_l4_trainer_pool():
     assert config.resources.trainer_replicas == 2
     assert config.default_model_config == "lfm2.5-1.2b-instruct"
     assert config.model.base_model == "LiquidAI/LFM2.5-1.2B-Instruct"
-    assert config.model.attn_implementation == "flash_attention_2"
+    assert config.model.attn_implementation == "auto"
     assert settings["wandb"]["enabled"] is True
     assert settings["wandb"]["project"] == "ray-unsloth-multitenant"
 

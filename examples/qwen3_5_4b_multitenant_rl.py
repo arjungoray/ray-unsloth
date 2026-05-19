@@ -28,6 +28,7 @@ import yaml
 
 from ray_unsloth import AdamParams, SamplingParams, ServiceClient
 from ray_unsloth.clients._remote import resolve
+from ray_unsloth.download import modal_volume_get_command
 
 
 _RL_PATH = Path(__file__).with_name("qwen3_5_9b_rl_training.py")
@@ -55,6 +56,7 @@ class TenantResult:
     name: str
     session_id: str
     sampler_path: str
+    download_command: str
     final_reward: float
     final_loss: float
     elapsed: float
@@ -436,7 +438,13 @@ async def train_one_tenant(
                 f"datums={len(datums)} expert={len(expert_datums)} loss={final_loss:.3f}"
             )
 
-        saved = await training_client.save_weights_for_sampler_async(name=f"{spec.name}-qwen3.5-4b-rl").result_async()
+        sampler_name = f"{spec.name}-qwen3.5-4b-rl"
+        saved = await training_client.save_weights_for_sampler_async(name=sampler_name).result_async()
+        download = await training_client.save_sampler_with_download_url_async(name=sampler_name)
+        download_command = modal_volume_get_command(
+            service_client.config.modal.volume_name,
+            download.archive_relpath,
+        )
         logger.log(
             {
                 "progress/phase": "saved",
@@ -452,6 +460,7 @@ async def train_one_tenant(
             name=spec.name,
             session_id=training_client.session_id,
             sampler_path=saved.path,
+            download_command=download_command,
             final_reward=final_reward,
             final_loss=final_loss,
             elapsed=time.time() - started,
@@ -477,6 +486,7 @@ async def train(args: argparse.Namespace) -> None:
         run_config={"base_model": BASE_MODEL, "tenant_count": len(specs)},
     )
     service_client = ServiceClient(config=args.config)
+    results: list[TenantResult] = []
     try:
         capabilities = service_client.get_server_capabilities()
         orchestrator.log(
@@ -548,6 +558,11 @@ async def train(args: argparse.Namespace) -> None:
     finally:
         service_client.close()
         orchestrator.finish()
+    if results:
+        print("LoRA download commands:")
+        for result in results:
+            print(f"[{result.name}]")
+            print(result.download_command)
 
 
 def main() -> None:

@@ -37,7 +37,7 @@ This page separates what currently works from what is partial or in progress.
 - Modal actor handles with Ray-like `.remote` and `.remote_async` method surfaces.
 - Model/LoRA config aliases.
 - LoRA target module helper flags.
-- Attention backend selection for xformers, FlashAttention 2, and FlashAttention 3 when available.
+- Attention backend auto-selection by GPU compute capability: FlashAttention 3 on Hopper (H100/H200/H800/H20/GH200), FlashAttention 2 on Ampere + Ada Lovelace (A100/A10/L4/L40/RTX 30xx/40xx/A-series/Ada-series), and xformers on older GPUs or when FA kernels are unavailable.
 - Fast inference/vLLM standby toggles where compatible.
 - Padding-free packed loss path with fallback.
 - BitsAndBytes AdamW variants with Torch AdamW fallback.

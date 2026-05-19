@@ -6,6 +6,7 @@ Run on a GPU machine with Ray and Unsloth installed:
 """
 
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
+from ray_unsloth.download import modal_volume_get_command
 
 
 def main() -> None:
@@ -37,6 +38,12 @@ def main() -> None:
         sampling_params=SamplingParams(max_tokens=32, temperature=0.0),
     ).result()
     print(sample.sequences[0].text)
+
+    download = training.save_sampler_with_download_url()
+    download_command = modal_volume_get_command(service.config.modal.volume_name, download.archive_relpath)
+    service.close()
+    print("LoRA download:")
+    print(download_command)
 
 
 if __name__ == "__main__":

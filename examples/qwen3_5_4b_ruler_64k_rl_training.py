@@ -39,6 +39,7 @@ from ray_unsloth import (
     ServiceClient,
     TensorData,
 )
+from ray_unsloth.download import modal_volume_get_command
 
 
 _HELPER_PATH = Path(__file__).with_name("qwen3_5_9b_rl_training.py")
@@ -626,6 +627,7 @@ async def train(args: argparse.Namespace) -> None:
             "tokens/train_total": 0,
         },
     )
+    download_command: str | None = None
     try:
         wandb_logger.log_progress("model_create_started", step=0)
         training_client = await service_client.create_lora_training_client_async(
@@ -811,9 +813,15 @@ async def train(args: argparse.Namespace) -> None:
                 f"train_tokens={count_train_tokens(datums) + count_train_tokens(expert_datums)} "
                 f"({elapsed:.1f}s)"
             )
+
+        download = await training_client.save_sampler_with_download_url_async(name=sampler_name)
+        download_command = modal_volume_get_command(service_client.config.modal.volume_name, download.archive_relpath)
     finally:
         service_client.close()
         wandb_logger.finish()
+    if download_command is not None:
+        print("LoRA download:")
+        print(download_command)
 
 
 def main() -> None:

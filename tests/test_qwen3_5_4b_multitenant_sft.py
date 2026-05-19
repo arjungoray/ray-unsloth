@@ -38,6 +38,19 @@ def test_multitenant_example_runs_tenants_concurrently_and_reuses_live_actor_for
     assert 'reinit="create_new"' in source
 
 
+def test_multitenant_lora_download_command_uses_modal_volume_name():
+    command = qwen3_5_4b_multitenant_sft.modal_volume_get_command(
+        "ray-unsloth-checkpoints",
+        "train-b2c1e8b712df43a2a108330a14fa6e00/arc-math-tutor-qwen3.5-4b-sft.tar.gz",
+    )
+
+    assert command == (
+        "modal volume get ray-unsloth-checkpoints \\\n"
+        "  train-b2c1e8b712df43a2a108330a14fa6e00/arc-math-tutor-qwen3.5-4b-sft.tar.gz \\\n"
+        "  ./arc-math-tutor-qwen3.5-4b-sft.tar.gz"
+    )
+
+
 def test_wandb_logger_logs_event_index_and_train_step():
     class FakeRun:
         def __init__(self):

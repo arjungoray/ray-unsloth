@@ -56,7 +56,7 @@ This lets examples pass either friendly aliases such as `qwen3.5-4b` or full Hug
 | `gpu_memory_utilization` | `0.85` | Passed to Unsloth loader. |
 | `trust_remote_code` | `true` | Hugging Face/Transformers trust flag. |
 | `device_map` | `null` | Optional explicit device map. |
-| `attn_implementation` | `null` | Explicit attention backend or `auto`. |
+| `attn_implementation` | `null` | Explicit attention backend or `auto`. See [Attention backend auto-selection](#attention-backend-auto-selection). |
 
 ## LoRAConfig
 
@@ -109,6 +109,18 @@ Validation rules:
 - `profile` must be `quality` or `throughput`.
 - `optimizer` must be `adamw_8bit`, `paged_adamw_8bit`, or `adamw_torch`.
 - `padding_free`, `sample_packing`, `vllm_standby`, and `flash_attention_2` must be `auto`, `true`, or `false`.
+
+## Attention backend auto-selection
+
+When `model.attn_implementation` is `auto` (or `null`) and `speed.flash_attention_2` is `auto`, the engine picks the best attention backend at load time from the detected GPU's compute capability:
+
+| Backend | Compute capability | Example GPUs |
+| --- | --- | --- |
+| `flash_attention_3` | `>= 9.0` (Hopper) | H100, H200, H800, H20, GH200 (Grace Hopper) |
+| `flash_attention_2` | `8.0` / `8.6` / `8.9` (Ampere + Ada Lovelace) | A100, A800, A40, A30, A16, A10, A10G, A2; RTX A6000/A5500/A5000/A4500/A4000/A3000/A2000; RTX 3050–3090 Ti; L4, L40, L40S; RTX 6000/5000/4500/4000/4000 SFF/2000 Ada; RTX 4060–4090 |
+| `xformers` | all other GPUs (Volta sm_70, Turing sm_75, etc.) or missing FA kernels | T4, V100, RTX 20-series, GTX 16-series |
+
+If the required FlashAttention package is not installed (`flash_attn` for FA2, `flash_attn_interface` for FA3), the engine transparently falls back to `xformers`. Setting `model.attn_implementation` to any explicit value (`flash_attention_2`, `flash_attention_3`, `xformers`, `sdpa`, ...) bypasses auto-selection.
 
 ## DistributedConfig
 

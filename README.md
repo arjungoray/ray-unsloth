@@ -1,243 +1,102 @@
 # ray-unsloth
 
-`ray-unsloth` is a small Python package for running Tinker-shaped low-level
-fine-tuning primitives on Ray actors backed by Unsloth models.
+**Tinker-shaped fine-tuning primitives on infrastructure you control.**
 
-The repository is not a full trainer or dataset framework. Your loop stays in
-regular Python, while `ray-unsloth` provides client facades for training,
-sampling, checkpointing, and Ray GPU placement. Unsloth owns the model loading,
-LoRA adapter setup, forward/backward passes, generation, and adapter saves.
+Write the training loop in plain Python. Ray orchestrates GPU actors. Unsloth runs the model. Modal optional — train from a laptop, scale on cloud GPUs.
 
-## Tinker Compatibility
+[![Documentation](https://img.shields.io/badge/docs-ray--unsloth-2563eb?style=for-the-badge&logo=readthedocs&logoColor=white)](https://arjungoray.github.io/ray-unsloth/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green?style=for-the-badge)](LICENSE)
 
-The package exposes both `ray_unsloth` and a lightweight `tinker` import alias.
-That means many SDK and cookbook examples can be used as-is after installing
-this repository in editable mode:
+---
 
-```python
-import tinker
+## Why ray-unsloth?
 
-service_client = tinker.ServiceClient(config="configs/example.yaml")
-training_client = await service_client.create_lora_training_client_async(
-    base_model="Qwen/Qwen3.5-4B",
-    rank=16,
-)
-tokenizer = training_client.get_tokenizer()
-```
+Most fine-tuning stacks hide the loop behind abstractions. **ray-unsloth** does the opposite: a low-level, inspectable API modeled on the [Tinker SDK](https://arjungoray.github.io/ray-unsloth/compare-tinker) — `forward_backward`, `optim_step`, checkpoint, sample — with no hosted lock-in.
 
-Cookbook-style `ModelInput(chunks=[...])`, `EncodedTextChunk`, image chunk
-placeholders, `TensorData.from_numpy(...)`, `TensorData.from_torch(...)`,
-`target_tokens`/`weights` cross-entropy data, synchronous tokenizer/info access,
-direct `await sampling_client.sample_async(...)`, and the common RL loss names
-`importance_sampling`, `ppo`, and `cispo` are supported. The main remaining edit
-for real Tinker examples is usually passing a local runtime config to
-`ServiceClient` so Ray/Modal/Unsloth know where to run.
+| | |
+|---|---|
+| **Your code** | SFT, RL, math rollouts, multi-tenant LoRA — you own the loop |
+| **Ray** | Trainer & sampler actors, placement, concurrency, namespaces |
+| **Unsloth** | 4-bit LoRA load, forward/backward, generation, adapter saves |
+| **Modal** | Optional remote GPU backend; Ray stays local on your machine |
+
+Drop-in `import tinker` compatibility means many Tinker cookbook examples run with minimal edits.
+
+---
+
+## Documentation
+
+**Full docs:** [**arjungoray.github.io/ray-unsloth**](https://arjungoray.github.io/ray-unsloth/)
+
+| | |
+|---|---|
+| [Quickstart](https://arjungoray.github.io/ray-unsloth/quickstart) | Install, first SFT step, smoke tests |
+| [Architecture](https://arjungoray.github.io/ray-unsloth/architecture) | Ray → Modal → Unsloth mental model |
+| [Guides](https://arjungoray.github.io/ray-unsloth/guides/sft) | SFT, RL, runtimes, checkpoints, examples |
+| [API reference](https://arjungoray.github.io/ray-unsloth/api/service-client) | `ServiceClient`, `TrainingClient`, `SamplingClient` |
+| [Configuration](https://arjungoray.github.io/ray-unsloth/configuration) | YAML runtime configs for L4, A100, sharding |
+| [Roadmap](https://arjungoray.github.io/ray-unsloth/project/roadmap) | What's next |
+
+---
 
 ## Quickstart
-
-Install the package for local development:
 
 ```bash
 pip install -e ".[dev,unsloth]"
 ```
 
-For the Modal-backed smoke test, install the Modal extra and authenticate once:
-
-```bash
-pip install -e ".[dev,modal]"
-modal setup
-```
-
-Create a service from the example runtime config, run one supervised
-fine-tuning step, save adapter weights, and sample from a new sampler actor:
-
 ```python
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
 
 service = ServiceClient(config="configs/example.yaml")
-training = service.create_lora_training_client(user_metadata={"example": "quickstart"})
+training = service.create_lora_training_client()
 
 tokenizer = training.get_tokenizer().result()
 encoded = tokenizer("Explain gradient accumulation.", add_special_tokens=True)
 
-datum = Datum(
-    model_input=ModelInput.from_ints(encoded["input_ids"]),
-    loss_fn_inputs={"labels": encoded["input_ids"]},
-)
-
-training.forward_backward([datum], loss_fn="cross_entropy").result()
+training.forward_backward(
+    [Datum(
+        model_input=ModelInput.from_ints(encoded["input_ids"]),
+        loss_fn_inputs={"labels": encoded["input_ids"]},
+    )],
+    loss_fn="cross_entropy",
+).result()
 training.optim_step(AdamParams(learning_rate=2e-5)).result()
 
 sampler = training.save_weights_and_get_sampling_client()
-sample = sampler.sample(
+sampler.sample(
     ModelInput.from_ints(encoded["input_ids"]),
     num_samples=1,
     sampling_params=SamplingParams(max_tokens=64, temperature=0.7),
 ).result()
 ```
 
-See `examples/sft_loop.py` for a minimal local SFT loop.
+For Modal-backed GPU runs: `pip install -e ".[dev,modal]"` then `modal setup`. See the [quickstart guide](https://arjungoray.github.io/ray-unsloth/quickstart) for smoke tests, Tinker tutorials, RL, and multi-tenant examples.
 
-For a stricter end-to-end check, run the overfit smoke test. It trains one
-canary answer for several LoRA steps, samples from the saved adapter, and fails
-if generation is empty, punctuation-only, or missing the trained answer:
+---
 
-```bash
-python examples/overfit_smoke_test.py --config configs/example.yaml
-```
+## Highlights
 
-To run the official Tinker first-SFT tutorial as a full low-level primitive
-training loop against this implementation:
+- **Tinker-compatible clients** — `ServiceClient`, `TrainingClient`, `SamplingClient`, plus a `tinker` import alias
+- **LoRA SFT & RL** — cross-entropy, importance sampling, PPO, CISPO; grouped rollouts and policy updates
+- **Multi-tenant training** — concurrent LoRA sessions on a shared GPU (SFT and RL)
+- **Model sharding** — e.g. Qwen3.5 9B across two L4s on Modal
+- **Long-context RL** — RULER-style 64k experiments
+- **Checkpointing** — atomic adapter publishes, training state, sampler-ready weights
+- **YAML-driven runtime** — Ray resources, Modal functions, model recipes, W&B hooks
 
-```bash
-python examples/tinker_first_sft_training.py --config configs/example.yaml
-```
-
-To run the companion first-RL tutorial shape, which samples grouped math
-rollouts, scores boxed numerical answers, builds group-relative advantages, and
-updates with the `importance_sampling` policy loss:
-
-```bash
-python examples/tinker_first_rl_training.py --config configs/example.yaml
-```
-
-To run the same RL loop on Qwen3.5 9B with model-sharded training across two
-Modal L4 GPUs:
-
-```bash
-python examples/qwen3_5_9b_rl_training.py --config configs/qwen3_5_9b_2x_l4_sharded.yaml
-```
-
-That Qwen RL example samples directly from the live training actor, so it does
-not checkpoint before every rollout. It logs immediate progress phases plus
-rewards, advantages, policy summaries, timing, and completion tables to Weights
-& Biases by default. Install and authenticate W&B locally before running, or set
-`examples.qwen3_5_9b_rl_training.wandb.enabled` to `false` in the config.
-
-For a harder Tinker Cookbook-style Math RL run, install the example dataset
-dependencies and train Qwen3.5 9B on Hugging Face math datasets such as
-Hendrycks MATH, GSM8K, DeepMath, or Polaris:
-
-```bash
-pip install -e ".[examples]"
-python examples/qwen3_5_9b_math_dataset_rl_training.py \
-  --config configs/qwen3_5_9b_2x_l4_sharded.yaml \
-  --dataset math \
-  --dataset-limit 256
-```
-
-The default config uses the same Qwen3.5 9B model-sharded setup, samples from
-the live training actor, grades boxed answers, computes group-relative
-advantages, and uses `importance_sampling` for the policy update.
-
-To run the same cookbook-style loop on Qwen3.5 4B with one Modal L4:
-
-```bash
-python examples/qwen3_5_4b_math_dataset_rl_training.py \
-  --config configs/qwen3_5_4b_1x_l4.yaml \
-  --dataset math \
-  --dataset-limit 256
-```
-
-The 4B example logs cumulative W&B token counters under
-`tokens/prefill_total`, `tokens/sample_total`, and `tokens/train_total`.
-
-To exercise multi-tenant training on one GPU, run two concurrent Qwen3.5 4B
-LoRA SFT jobs on a single Modal-backed A100 40GB. The example creates two
-independent training clients for the same base model, routes them through one
-shared A100 container pool, logs one W&B run per tenant plus an orchestrator
-run, and saves sampler-ready adapters under separate session namespaces:
-
-```bash
-python examples/qwen3_5_4b_multitenant_sft.py \
-  --config configs/qwen3_5_4b_1x_a100_multitenant.yaml
-```
-
-For the same one-GPU multi-tenant shape with RL updates instead of SFT updates,
-run:
-
-```bash
-python examples/qwen3_5_4b_multitenant_rl.py \
-  --config configs/qwen3_5_4b_1x_a100_multitenant_rl.yaml
-```
-
-The default `configs/example.yaml` keeps Ray orchestration local and sends the
-Unsloth GPU work to Modal. It uses a single L4-backed Modal function, stores
-adapter checkpoints in the `ray-unsloth-checkpoints` Modal Volume, and requests
-zero GPUs from local Ray so it can run from a laptop:
-
-```bash
-python examples/sft_loop.py
-```
-
-## Current Features
-
-- Tinker-style public clients: `ServiceClient`, `TrainingClient`,
-  `SamplingClient`, and a small local `RestClient` for checkpoint inspection.
-- Ray-backed trainer and sampler actors with configurable CPU/GPU resources,
-  namespaces, placement strategy, trainer concurrency, and sampler replica
-  count.
-- Modal-backed GPU execution for resource-efficient smoke tests while keeping
-  the Python training loop and Ray orchestration local.
-- Unsloth model loading with LoRA configuration, 4-bit loading, dtype,
-  sequence length, target modules, RS-LoRA toggle, and fast inference settings
-  driven by YAML or dictionaries.
-- Training primitives for `forward`, `forward_backward`, async aliases, custom
-  backward losses, AdamW optimizer steps, gradient clipping, and token logprob
-  computation.
-- Sampling primitives for text generation, multiple return sequences, top-p,
-  top-k, temperature, max token, seed, stop sequence, generated-token logprob,
-  prompt logprob, and top-k prompt logprob parameters.
-- Adapter checkpoint helpers with atomic directory publishing, `local://` and
-  initial `tinker://local/...` path handling, and manifests for training state,
-  optional optimizer state, sampler-ready weights, metadata, and local publish
-  status.
-- Client construction from fresh config, Tinker-style method signatures, saved
-  training state, saved training state with optimizer, or exported sampler
-  weights.
-- Multi-tenant LoRA training sessions for concurrent users training separate
-  adapters against the same base model on one GPU cluster.
-- Lightweight dataclass request and response types that are pickle-friendly for
-  Ray, include Tinker-compatible aliases for common fields, and are easy to
-  inspect in tests.
-- Basic unit coverage for public client futures, sampling round-robin behavior,
-  runtime config parsing, checkpoint manifests, and public data types.
-
-## Roadmap
-
-- Broader loss support beyond the current cross entropy, importance sampling,
-  PPO, and CISPO primitives, including DRO, GRPO, DPO-style objectives, and
-  reward-model-driven workflows.
-- Higher-level examples for multi-step SFT, evaluation, rollout collection, and
-  policy optimization while keeping the low-level primitives available.
-- Stronger multi-actor orchestration, including coordinated sampler pools and
-  clearer lifecycle management for Ray sessions.
-- More complete checkpoint backends, such as cloud/object-store paths, checkpoint
-  discovery beyond the local manifest index, and retention policies.
-- Richer model and tokenizer IO, including chat-template helpers, prompt/text
-  convenience APIs, and safer validation around tokenized inputs.
-- Expanded observability for training and sampling metrics, actor health,
-  resource placement, and checkpoint lineage.
-- Integration tests that exercise real Ray and Unsloth execution on GPU
-  machines in addition to the current lightweight unit tests.
-- Packaging polish for optional dependencies, examples, and compatibility across
-  supported Unsloth, Transformers, PyTorch, and Ray versions.
-
-## Configuration
-
-Runtime behavior is configured with `RuntimeConfig` or YAML. The example config
-in `configs/example.yaml` defines Ray connection settings, default model and
-LoRA parameters, model-specific `model_configs`, resource requests for trainer
-and sampler actors, checkpoint root, and supported model metadata. Passing a
-configured alias such as `base_model="gemma4-e3b-it"`,
-`base_model="lfm2.5-1.2b-instruct"`, or `base_model="qwen3.5-4b"` selects
-that model's full Unsloth `from_pretrained` and `get_peft_model` recipe.
+---
 
 ## Development
-
-Install development dependencies and run the unit tests:
 
 ```bash
 pip install -e ".[dev]"
 pytest
 ```
+
+---
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).
