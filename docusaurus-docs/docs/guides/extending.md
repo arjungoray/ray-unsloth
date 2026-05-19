@@ -74,8 +74,12 @@ The actors or handles must expose the method names used by `TrainingClient` and 
 
 The existing runtime boundary is:
 
-```text
-ServiceClient -> session -> actor-like handle -> TrainerActorImpl/SamplerActorImpl -> UnslothEngine
+```mermaid
+flowchart LR
+    SC["ServiceClient"] --> S["Session"]
+    S --> H["Actor handle"]
+    H --> I["TrainerActorImpl<br/>SamplerActorImpl"]
+    I --> UE["UnslothEngine"]
 ```
 
 Follow that boundary and avoid leaking backend-specific logic into public clients.

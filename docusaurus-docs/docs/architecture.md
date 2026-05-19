@@ -12,6 +12,37 @@ New here? Run the [Quickstart](./quickstart.md) first, then come back for the fu
 
 </div>
 
+## System overview
+
+```mermaid
+flowchart TB
+    subgraph L1["Layer 1 · Client API"]
+        SC["ServiceClient"]
+        TC["TrainingClient"]
+        SamC["SamplingClient"]
+        RC["RestClient"]
+    end
+
+    subgraph L2["Layer 2 · Runtime"]
+        Ray["RaySession"]
+        Modal["ModalSession"]
+    end
+
+    subgraph L3["Layer 3 · Engine"]
+        UE["UnslothEngine"]
+    end
+
+    SC --> Ray
+    SC --> Modal
+    TC --> Ray
+    TC --> Modal
+    SamC --> Ray
+    SamC --> Modal
+    RC -.->|manifest scan| Ray
+    Ray --> UE
+    Modal --> UE
+```
+
 ## Layer 1: public client API
 
 The client API lives in `src/ray_unsloth/clients`:
@@ -52,8 +83,12 @@ It also creates per-session placement groups so independent trainer or sampler s
 
 The result is a Ray-like local handle:
 
-```text
-TrainingClient -> ModalActorHandle -> ModalActorService.invoke -> TrainerActorImpl -> UnslothEngine
+```mermaid
+flowchart LR
+    TC["TrainingClient"] --> MAH["ModalActorHandle"]
+    MAH --> MAS["ModalActorService.invoke"]
+    MAS --> TAI["TrainerActorImpl"]
+    TAI --> UE["UnslothEngine"]
 ```
 
 This lets user code keep the same client calls while the heavy GPU work happens remotely.
@@ -74,31 +109,29 @@ This lets user code keep the same client calls while the heavy GPU work happens 
 
 ## End-to-end SFT flow
 
-```text
-ServiceClient(config)
-  -> create_lora_training_client()
-  -> RaySession or ModalSession creates trainer actor
-  -> trainer actor constructs UnslothEngine
-  -> user builds Datum objects
-  -> TrainingClient.forward_backward(data, "cross_entropy")
-  -> UnslothEngine computes weighted token loss and calls backward()
-  -> TrainingClient.optim_step(AdamParams(...))
-  -> optimizer updates LoRA parameters
-  -> save_weights_and_get_sampling_client()
-  -> SamplingClient.sample(...)
+```mermaid
+flowchart TD
+    A["ServiceClient(config)"] --> B["create_lora_training_client()"]
+    B --> C["RaySession or ModalSession<br/>creates trainer actor"]
+    C --> D["UnslothEngine loads model + LoRA"]
+    D --> E["Build Datum objects"]
+    E --> F["forward_backward(cross_entropy)"]
+    F --> G["optim_step(AdamParams)"]
+    G --> H["save_weights_and_get_sampling_client()"]
+    H --> I["SamplingClient.sample()"]
 ```
 
 ## End-to-end RL flow
 
-```text
-TrainingClient
-  -> create_live_sampling_client() or save_weights_and_get_sampling_client()
-  -> sample grouped rollouts
-  -> grade completions
-  -> compute group-relative advantages
-  -> build Datum(loss_fn_inputs={target_tokens, logprobs, advantages, weights})
-  -> forward_backward(data, "importance_sampling" | "ppo" | "cispo")
-  -> optim_step()
+```mermaid
+flowchart TD
+    A["TrainingClient"] --> B["create_live_sampling_client()<br/>or save_weights_and_get_sampling_client()"]
+    B --> C["Sample grouped rollouts"]
+    C --> D["Grade completions"]
+    D --> E["Compute group-relative advantages"]
+    E --> F["Build Datum with logprobs + advantages"]
+    F --> G["forward_backward(IS | PPO | CISPO)"]
+    G --> H["optim_step()"]
 ```
 
 The RL examples use the same low-level primitives as SFT. The difference is the `Datum.loss_fn_inputs` payload and selected loss function.
@@ -107,11 +140,13 @@ The RL examples use the same low-level primitives as SFT. The difference is the 
 
 Checkpoint helpers live in `src/ray_unsloth/checkpoints.py`. Saves are published atomically:
 
-1. Create a temporary directory next to the final checkpoint path.
-2. Save adapter files and tokenizer files.
-3. Optionally save `optimizer.pt`.
-4. Write `manifest.json`.
-5. Atomically replace the final directory.
+```mermaid
+flowchart LR
+    A["Temp directory"] --> B["Save adapter + tokenizer"]
+    B --> C["Optional optimizer.pt"]
+    C --> D["Write manifest.json"]
+    D --> E["Atomic rename to final path"]
+```
 
 Supported path forms:
 
@@ -130,6 +165,17 @@ Distributed mode is deliberately narrow. It supports single-node DDP:
 - `distributed.gpus_per_node` must be at least `1`.
 
 `RaySession` creates one Ray worker per GPU and a CPU coordinator. The coordinator shards input datums round-robin, calls every worker, aggregates losses and metrics, and returns a response with original datum order restored for `loss_fn_outputs`.
+
+```mermaid
+flowchart LR
+    C["CoordinatorActor"] --> W1["Worker GPU 0"]
+    C --> W2["Worker GPU 1"]
+    C --> WN["Worker GPU N"]
+    W1 --> C
+    W2 --> C
+    WN --> C
+    C --> R["Aggregated ForwardBackwardOutput"]
+```
 
 ## Important design tradeoffs
 
