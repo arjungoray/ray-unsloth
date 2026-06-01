@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -69,10 +69,11 @@ class ModelRuntimeConfig:
         *,
         default_model: ModelConfig,
         default_lora: LoRAConfig,
+        name: str = "<name>",
     ) -> "ModelRuntimeConfig":
         return cls(
-            model=_replace_dataclass(default_model, data.get("model", {})),
-            lora=_replace_dataclass(default_lora, data.get("lora", {})),
+            model=_replace_dataclass(default_model, data.get("model", {}), path=f"model_configs.{name}.model"),
+            lora=_replace_dataclass(default_lora, data.get("lora", {}), path=f"model_configs.{name}.lora"),
         )
 
 
@@ -178,32 +179,39 @@ class RuntimeConfig:
         else:
             model_data = dict(model_data)
             default_model_config = model_data.pop("config", None)
-        model = ModelConfig(**model_data)
-        lora = LoRAConfig(**data.get("lora", {}))
-        model_configs = {
-            name: ModelRuntimeConfig.from_dict(
+        model = _build_dataclass(ModelConfig, model_data, path="model")
+        lora = _build_dataclass(LoRAConfig, data.get("lora", {}), path="lora")
+        model_configs = {}
+        for name, config in data.get("model_configs", {}).items():
+            if not isinstance(config, dict):
+                raise ValueError(f"model_configs.{name} must be a mapping with optional model and lora sections.")
+            model_configs[name] = ModelRuntimeConfig.from_dict(
                 config,
                 default_model=model,
                 default_lora=lora,
+                name=name,
             )
-            for name, config in data.get("model_configs", {}).items()
-        }
         if default_model_config is not None:
             if default_model_config not in model_configs:
-                raise ValueError(f"Unknown model config: {default_model_config}")
+                available = _format_available_model_configs(model_configs)
+                raise ValueError(
+                    f"model.config '{default_model_config}' does not match a key in model_configs. "
+                    f"Available model configs: {available}. Set model.config to one of these aliases "
+                    "or remove model.config to use model.base_model."
+                )
             selected = model_configs[default_model_config]
             model = selected.model
             lora = selected.lora
         return cls(
-            ray=RayConfig(**data.get("ray", {})),
+            ray=_build_dataclass(RayConfig, data.get("ray", {}), path="ray"),
             model=model,
             lora=lora,
             default_model_config=default_model_config,
             model_configs=model_configs,
-            resources=ResourceConfig(**data.get("resources", {})),
-            speed=SpeedConfig(**data.get("speed", {})),
-            distributed=DistributedConfig(**data.get("distributed", {})),
-            modal=ModalConfig(**data.get("modal", {})),
+            resources=_build_dataclass(ResourceConfig, data.get("resources", {}), path="resources"),
+            speed=_build_dataclass(SpeedConfig, data.get("speed", {}), path="speed"),
+            distributed=_build_dataclass(DistributedConfig, data.get("distributed", {}), path="distributed"),
+            modal=_build_dataclass(ModalConfig, data.get("modal", {}), path="modal"),
             checkpoint_root=data.get("checkpoint_root", "checkpoints"),
             supported_models=list(data.get("supported_models", [])),
         )
@@ -229,10 +237,40 @@ class RuntimeConfig:
         return [self.model.base_model]
 
 
-def _replace_dataclass(instance, updates: dict[str, Any]):
+def _build_dataclass(cls, data: dict[str, Any], *, path: str):
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must be a mapping.")
+    field_names = {field.name for field in fields(cls)}
+    unknown = sorted(set(data) - field_names)
+    if unknown:
+        raise ValueError(
+            f"Unknown config field(s) in {path}: {unknown}. "
+            f"Valid fields: {sorted(field_names)}."
+        )
+    try:
+        return cls(**data)
+    except TypeError as exc:
+        raise ValueError(f"Invalid value for {path}: {exc}") from exc
+
+
+def _replace_dataclass(instance, updates: dict[str, Any], *, path: str):
     values = asdict(instance)
+    field_names = set(values)
+    unknown = sorted(set(updates) - field_names)
+    if unknown:
+        raise ValueError(
+            f"Unknown config field(s) in {path}: {unknown}. "
+            f"Valid fields: {sorted(field_names)}."
+        )
     values.update(updates)
     return type(instance)(**values)
+
+
+def _format_available_model_configs(model_configs: dict[str, ModelRuntimeConfig]) -> str:
+    if not model_configs:
+        return "none"
+    entries = [f"{name} -> {config.model.base_model}" for name, config in model_configs.items()]
+    return ", ".join(entries)
 
 
 def load_config(config: str | Path | RuntimeConfig | dict[str, Any] | None) -> RuntimeConfig:

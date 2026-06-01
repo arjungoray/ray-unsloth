@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ray_unsloth.checkpoints import (
     atomic_checkpoint_dir,
     base_manifest,
@@ -126,6 +128,42 @@ def test_runtime_config_uses_selected_model_config_as_default():
     assert lora.target_modules == ["q_proj", "k_proj", "v_proj"]
 
 
+def test_runtime_config_unknown_default_model_config_names_field_and_options():
+    with pytest.raises(ValueError) as exc_info:
+        RuntimeConfig.from_dict(
+            {
+                "model": {"config": "missing-alias"},
+                "model_configs": {
+                    "qwen3.5-4b": {
+                        "model": {"base_model": "Qwen/Qwen3.5-4B"},
+                    }
+                },
+            }
+        )
+
+    message = str(exc_info.value)
+    assert "model.config 'missing-alias'" in message
+    assert "qwen3.5-4b -> Qwen/Qwen3.5-4B" in message
+
+
+def test_runtime_config_unknown_nested_field_names_config_path():
+    with pytest.raises(ValueError) as exc_info:
+        RuntimeConfig.from_dict(
+            {
+                "model_configs": {
+                    "qwen3.5-4b": {
+                        "lora": {"rnak": 16},
+                    }
+                }
+            }
+        )
+
+    message = str(exc_info.value)
+    assert "model_configs.qwen3.5-4b.lora" in message
+    assert "rnak" in message
+    assert "rank" in message
+
+
 def test_atomic_checkpoint_manifest(tmp_path: Path):
     target = tmp_path / "checkpoint"
 
@@ -164,6 +202,53 @@ def test_engine_bare_checkpoint_names_are_scoped_by_session(tmp_path: Path):
     assert engine._checkpoint_target(str(tmp_path / "explicit"), prefix="state") == (tmp_path / "explicit").resolve()
     assert engine._checkpoint_target("nested/explicit", prefix="state") == (Path("nested/explicit").resolve())
     assert engine._checkpoint_target(f"tinker://local/{tmp_path / 'uri'}", prefix="state") == (tmp_path / "uri").resolve()
+
+
+def test_engine_checkpoint_manifest_validation_names_mismatched_lora_fields(tmp_path: Path):
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model_config = RuntimeConfig.from_dict({"model": {"base_model": "base/model"}}).model
+    engine.lora_config = RuntimeConfig.from_dict(
+        {"lora": {"rank": 8, "target_modules": ["q_proj", "v_proj"]}}
+    ).lora
+
+    with pytest.raises(ValueError) as rank_exc:
+        engine._validate_checkpoint_manifest(
+            {
+                "base_model": "base/model",
+                "lora": {"rank": 4, "target_modules": ["q_proj", "v_proj"]},
+            },
+            str(tmp_path),
+        )
+    assert "lora.rank" in str(rank_exc.value)
+    assert "rank 4" in str(rank_exc.value)
+
+    with pytest.raises(ValueError) as target_exc:
+        engine._validate_checkpoint_manifest(
+            {
+                "base_model": "base/model",
+                "lora": {"rank": 8, "target_modules": ["q_proj"]},
+            },
+            str(tmp_path),
+        )
+    assert "lora.target_modules" in str(target_exc.value)
+    assert "['q_proj']" in str(target_exc.value)
+
+
+def test_engine_checkpoint_manifest_validation_names_base_model_field(tmp_path: Path):
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model_config = RuntimeConfig.from_dict({"model": {"base_model": "expected/model"}}).model
+    engine.lora_config = RuntimeConfig.from_dict({}).lora
+
+    with pytest.raises(ValueError) as exc_info:
+        engine._validate_checkpoint_manifest(
+            {"base_model": "checkpoint/model", "lora": {"rank": engine.lora_config.rank}},
+            str(tmp_path),
+        )
+
+    message = str(exc_info.value)
+    assert "base_model mismatch" in message
+    assert "expected/model" in message
+    assert "checkpoint/model" in message
 
 
 def test_rest_client_lists_and_publishes_checkpoints(tmp_path: Path):
