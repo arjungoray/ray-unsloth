@@ -17,6 +17,9 @@ SPEC.loader.exec_module(overfit_smoke_test)
 build_sft_datum = overfit_smoke_test.build_sft_datum
 assert_meaningful_generation = overfit_smoke_test.assert_meaningful_generation
 assert_sampling_features = overfit_smoke_test.assert_sampling_features
+assert_loss_decreases = overfit_smoke_test.assert_loss_decreases
+assert_checkpoint_manifest = overfit_smoke_test.assert_checkpoint_manifest
+resolve_backend_config = overfit_smoke_test.resolve_backend_config
 
 
 class FakeTokenizer:
@@ -176,3 +179,113 @@ def test_sample_with_feature_checks_requests_new_sampling_features():
     assert calls[0]["include_prompt_logprobs"] is True
     assert calls[0]["topk_prompt_logprobs"] == 3
     assert calls[0]["sampling_params"].stop == ["."]
+
+
+def test_assert_loss_decreases_accepts_downward_curve():
+    assert_loss_decreases([2.0, 1.5, 1.0, 0.4])
+
+
+def test_assert_loss_decreases_tolerates_small_jitter():
+    # A tiny uptick within tolerance should not fail.
+    assert_loss_decreases([2.0, 1.5, 1.5005, 0.9])
+
+
+def test_assert_loss_decreases_rejects_increasing_loss():
+    with pytest.raises(AssertionError, match="did not decrease"):
+        assert_loss_decreases([1.0, 1.2, 1.5])
+
+
+def test_assert_loss_decreases_rejects_large_regression():
+    with pytest.raises(AssertionError, match="increased beyond tolerance"):
+        assert_loss_decreases([2.0, 0.5, 1.4, 0.3])
+
+
+def test_assert_loss_decreases_requires_two_values():
+    with pytest.raises(AssertionError, match="at least 2"):
+        assert_loss_decreases([1.0])
+
+
+def test_assert_loss_decreases_rejects_non_finite():
+    with pytest.raises(AssertionError, match="non-finite"):
+        assert_loss_decreases([2.0, float("nan")])
+
+
+def test_assert_checkpoint_manifest_accepts_valid_manifest(tmp_path):
+    from ray_unsloth.checkpoints import base_manifest, write_manifest
+
+    manifest = base_manifest(
+        kind="training_state",
+        step=3,
+        base_model="unsloth/tiny",
+        lora={"rank": 8},
+        has_optimizer=False,
+    )
+    write_manifest(tmp_path, manifest)
+
+    result = assert_checkpoint_manifest(str(tmp_path))
+    assert result["step"] == 3
+    assert result["base_model"] == "unsloth/tiny"
+
+
+def test_assert_checkpoint_manifest_accepts_checkpoint_ref_metadata():
+    # The Modal backend's checkpoint path is a remote volume the driver can't
+    # read; validation must use CheckpointRef.metadata (read remotely) instead.
+    from ray_unsloth.types import CheckpointRef
+
+    ref = CheckpointRef(
+        path="/__modal/volumes/vo-abc/state-step-12-deadbeef",
+        step=12,
+        has_optimizer=False,
+        metadata={
+            "kind": "training_state",
+            "step": 12,
+            "base_model": "LiquidAI/LFM2.5-1.2B-Instruct",
+            "lora": {"rank": 16},
+            "has_optimizer": False,
+            "created_at": 1.0,
+        },
+    )
+
+    result = assert_checkpoint_manifest(ref)
+    assert result["step"] == 12
+    assert result["base_model"] == "LiquidAI/LFM2.5-1.2B-Instruct"
+
+
+def test_assert_checkpoint_manifest_rejects_missing_manifest(tmp_path):
+    from ray_unsloth.errors import CheckpointError
+
+    with pytest.raises(CheckpointError):
+        assert_checkpoint_manifest(str(tmp_path))
+
+
+def test_assert_checkpoint_manifest_rejects_incomplete_manifest(tmp_path):
+    from ray_unsloth.checkpoints import write_manifest
+
+    write_manifest(tmp_path, {"kind": "training_state", "step": 1})
+
+    with pytest.raises(AssertionError, match="missing keys"):
+        assert_checkpoint_manifest(str(tmp_path))
+
+
+CONFIG_PATH = str(Path(__file__).parents[1] / "configs" / "example.yaml")
+
+
+def test_resolve_backend_config_forces_ray():
+    config = resolve_backend_config(CONFIG_PATH, "ray")
+    assert config.modal.enabled is False
+
+
+def test_resolve_backend_config_forces_modal():
+    config = resolve_backend_config(CONFIG_PATH, "modal")
+    assert config.modal.enabled is True
+
+
+def test_resolve_backend_config_auto_preserves_config():
+    config = resolve_backend_config(CONFIG_PATH, "auto")
+    # configs/example.yaml ships with modal.enabled: true
+    assert config.modal.enabled is True
+
+
+def test_resolve_backend_config_rejects_unknown_backend():
+    with pytest.raises(ValueError, match="unknown backend"):
+        resolve_backend_config(CONFIG_PATH, "gpu")
