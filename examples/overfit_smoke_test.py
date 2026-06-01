@@ -1,13 +1,20 @@
 """Overfit a tiny supervised example and verify generation changes.
 
-This is a real end-to-end smoke test for the Ray/Modal + Unsloth path. It
-trains a LoRA adapter on one canary answer, saves sampler weights, then checks
-that greedy generation includes the canary instead of returning punctuation
-noise.
+This is a real end-to-end GPU smoke test for the Ray/Modal + Unsloth path. It
+trains a LoRA adapter on one canary answer, asserts the loss decreases, writes a
+checkpoint and validates its manifest, saves sampler weights, then checks that
+greedy generation includes the canary instead of returning punctuation noise.
 
 Run on a configured GPU/Modal environment:
 
-    python examples/overfit_smoke_test.py --config configs/example.yaml
+    # Use whatever backend the config declares (modal.enabled):
+    python examples/overfit_smoke_test.py --config configs/overfit_smoke_test.yaml
+
+    # Force a backend without editing the config:
+    python examples/overfit_smoke_test.py --config configs/overfit_smoke_test.yaml --backend ray
+    python examples/overfit_smoke_test.py --config configs/overfit_smoke_test.yaml --backend modal
+
+See TESTING.md for full instructions.
 """
 
 from __future__ import annotations
@@ -15,8 +22,11 @@ from __future__ import annotations
 import argparse
 import math
 import string
+from typing import Any
 
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
+from ray_unsloth.checkpoints import read_manifest
+from ray_unsloth.config import load_config
 from ray_unsloth.download import modal_volume_get_command
 
 
@@ -64,6 +74,72 @@ def assert_meaningful_generation(text: str, expected: str) -> None:
         raise AssertionError(
             f"generation did not include expected canary {expected!r}; got {text!r}"
         )
+
+
+def resolve_backend_config(config_path: str, backend: str) -> Any:
+    """Load the config and force a runtime backend without editing the YAML.
+
+    ``backend`` is the single flag that selects where the test runs:
+      - ``"auto"``  keep whatever ``modal.enabled`` the config declares
+      - ``"ray"``   run on the local Ray backend (``modal.enabled = False``)
+      - ``"modal"`` run on Modal GPUs (``modal.enabled = True``)
+    """
+    config = load_config(config_path)
+    if backend == "ray":
+        config.modal.enabled = False
+    elif backend == "modal":
+        config.modal.enabled = True
+    elif backend != "auto":
+        raise ValueError(f"unknown backend {backend!r}; expected one of auto, ray, modal")
+    return config
+
+
+def assert_loss_decreases(losses: list[float], *, tolerance: float = 1e-3) -> None:
+    """Assert overfitting losses trend down (AC-2).
+
+    Requires at least two finite steps, a meaningfully lower final loss than the
+    first step, and a monotone-non-increasing curve within ``tolerance`` (small
+    per-step jitter is allowed, real regressions are not).
+    """
+    if len(losses) < 2:
+        raise AssertionError(f"need at least 2 loss values to check a trend; got {losses!r}")
+    if not all(math.isfinite(value) for value in losses):
+        raise AssertionError(f"loss curve contained a non-finite value: {losses!r}")
+    if losses[-1] >= losses[0]:
+        raise AssertionError(
+            f"loss did not decrease while overfitting: first={losses[0]:.4f} final={losses[-1]:.4f}"
+        )
+    for previous, current in zip(losses, losses[1:]):
+        if current > previous + tolerance:
+            raise AssertionError(
+                f"loss increased beyond tolerance {tolerance}: {previous:.4f} -> {current:.4f} "
+                f"(full curve {['%.4f' % value for value in losses]})"
+            )
+
+
+def assert_checkpoint_manifest(checkpoint) -> dict:
+    """Validate a checkpoint's manifest.json (AC-3).
+
+    Accepts either a ``CheckpointRef`` or a path. A ``CheckpointRef`` carries the
+    manifest in ``.metadata`` — already read back from disk by ``checkpoint_ref``
+    on the box that owns the checkpoint (the only thing that works for the Modal
+    backend, whose path lives on a remote volume the driver can't see). When
+    given a bare path (Ray local), the manifest is read from that path instead.
+    """
+    manifest = getattr(checkpoint, "metadata", None)
+    if not manifest:
+        manifest = read_manifest(checkpoint)
+    required = {"kind", "step", "base_model", "lora", "has_optimizer", "created_at"}
+    missing = required - manifest.keys()
+    if missing:
+        raise AssertionError(f"checkpoint manifest missing keys {sorted(missing)}: {manifest!r}")
+    if not isinstance(manifest["step"], int):
+        raise AssertionError(f"checkpoint manifest step is not an int: {manifest['step']!r}")
+    if not manifest["base_model"]:
+        raise AssertionError("checkpoint manifest base_model was empty")
+    if not isinstance(manifest["lora"], dict):
+        raise AssertionError(f"checkpoint manifest lora is not a mapping: {manifest['lora']!r}")
+    return manifest
 
 
 def sample_text(sampler, prompt_input: ModelInput, max_tokens: int) -> str:
@@ -119,14 +195,23 @@ def sample_with_feature_checks(sampler, prompt_input: ModelInput, max_tokens: in
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="configs/example.yaml")
+    parser.add_argument("--config", default="configs/overfit_smoke_test.yaml")
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "ray", "modal"],
+        default="auto",
+        help="Runtime backend: 'auto' uses the config's modal.enabled, "
+        "'ray' forces local Ray, 'modal' forces Modal GPUs.",
+    )
     parser.add_argument("--steps", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--target", default=DEFAULT_TARGET)
     args = parser.parse_args()
 
-    service = ServiceClient(config=args.config)
+    config = resolve_backend_config(args.config, args.backend)
+    print(f"backend={'modal' if config.modal.enabled else 'ray'}")
+    service = ServiceClient(config=config)
     training = service.create_lora_training_client(user_metadata={"example": "overfit_smoke_test"})
     tokenizer = training.get_tokenizer().result()
     datum, prompt_input, target_token_count = build_sft_datum(tokenizer, args.prompt, args.target)
@@ -135,12 +220,21 @@ def main() -> None:
     baseline = sample_text(baseline_sampler, prompt_input, max_tokens=target_token_count + 8)
     print(f"before={baseline!r}")
 
+    losses: list[float] = []
     for step in range(1, args.steps + 1):
         fb = training.forward_backward([datum], loss_fn="cross_entropy").result()
         if not math.isfinite(fb.loss):
             raise FloatingPointError(f"Non-finite loss at step {step}: {fb.loss}")
         training.optim_step(AdamParams(learning_rate=args.learning_rate, max_grad_norm=1.0)).result()
+        losses.append(float(fb.loss))
         print(f"step={step:02d} loss={fb.loss:.4f}")
+
+    assert_loss_decreases(losses)
+    print(f"PASS: loss decreased from {losses[0]:.4f} to {losses[-1]:.4f} over {len(losses)} steps.")
+
+    checkpoint = training.save_state().result()
+    manifest = assert_checkpoint_manifest(checkpoint)
+    print(f"PASS: checkpoint manifest valid at {checkpoint.path} (step={manifest['step']}).")
 
     sampler = training.save_weights_and_get_sampling_client()
     generated = sample_text(sampler, prompt_input, max_tokens=target_token_count + 8)

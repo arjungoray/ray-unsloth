@@ -1,0 +1,104 @@
+# Dedicated config for the real-GPU integration smoke test (WO-10).
+#
+# Why a separate config instead of example.yaml:
+#   The Modal image installs flash-attn only when no model wants vLLM
+#   (flash-attn ships as a torch2.8/cu12 wheel, while vLLM forces torch2.10/cu130,
+#   so the two are mutually exclusive in one image). example.yaml lists a
+#   vLLM-wanting model (gemma4-e2b-it), which pushes the image onto the no-FA2
+#   branch and the L4 then falls back to an attention backend that current
+#   transformers rejects.
+#
+#   This config references only the small LFM2.5-1.2B model, so the image takes
+#   the flash-attn branch and the engine auto-selects flash_attention_2 on the
+#   L4 (compute capability 8.9). The L4 supports FA2; it just needs the package
+#   present in the image.
+
+ray:
+  address: null
+  namespace: ray-unsloth
+  ignore_reinit_error: true
+
+model:
+  config: lfm2.5-1.2b-instruct
+
+lora:
+  rank: 8
+  alpha: 8
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  random_state: 3407
+  use_rslora: false
+  bias: none
+  use_gradient_checkpointing: unsloth
+  loftq_config: null
+
+model_configs:
+  lfm2.5-1.2b-instruct:
+    model:
+      base_model: LiquidAI/LFM2.5-1.2B-Instruct
+      max_seq_length: 4096
+      dtype: bfloat16
+      load_in_4bit: false
+      fast_inference: auto
+      gpu_memory_utilization: 0.85
+      trust_remote_code: true
+      attn_implementation: auto
+    lora:
+      rank: 16
+      alpha: 16
+      dropout: 0.0
+      target_modules:
+        - q_proj
+        - k_proj
+        - v_proj
+        - out_proj
+        - in_proj
+        - w1
+        - w2
+        - w3
+      random_state: 3407
+      use_rslora: false
+      bias: none
+      use_gradient_checkpointing: unsloth
+      loftq_config: null
+
+resources:
+  trainer_num_gpus: 0.0
+  trainer_num_cpus: 0.25
+  trainer_replicas: 1
+  sampler_num_gpus: 0.0
+  sampler_num_cpus: 0.25
+  sampler_replicas: 1
+  placement_strategy: PACK
+
+speed:
+  profile: quality
+
+distributed:
+  enabled: false
+  mode: null
+  num_nodes: 1
+  gpus_per_node: 1
+  backend: nccl
+  placement_strategy: STRICT_PACK
+
+modal:
+  enabled: true
+  app_name: ray-unsloth
+  gpu: L4
+  timeout: 1800
+  scaledown_window: 300
+  volume_name: ray-unsloth-checkpoints
+  volume_mount_path: /checkpoints
+  python_version: "3.11"
+
+checkpoint_root: /checkpoints
+supported_models:
+  - lfm2.5-1.2b-instruct

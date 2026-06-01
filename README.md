@@ -101,4 +101,7 @@ More examples — Tinker tutorials, RL, multi-tenant runs — in the **[quicksta
 pip install -e ".[dev]" && pytest
 ```
 
+For the real-GPU integration smoke test (full SFT loop on Ray local or Modal) and how to
+run it, see **[TESTING.md](TESTING.md)**.
+
 Apache 2.0 · see [LICENSE](LICENSE)
