@@ -293,6 +293,14 @@ def test_service_client_reports_multi_trainer_capacity(monkeypatch):
     assert capabilities.features["trainer_replicas"] == 4
 
 
+def test_service_client_advertises_implemented_losses(monkeypatch):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+
+    client = ServiceClient(config={})
+    losses = set(client.get_server_capabilities().features["losses"])
+    assert losses == {"cross_entropy", "importance_sampling", "ppo", "cispo"}
+
+
 def test_service_client_accepts_tinker_signature_and_metadata(monkeypatch):
     monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
     client = ServiceClient(user_metadata={"owner": "test"}, project_id="project", config={})

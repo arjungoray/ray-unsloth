@@ -58,7 +58,7 @@ class ServiceClient:
             max_sampler_replicas=self.config.resources.sampler_replicas,
             max_concurrent_trainers=self.config.resources.trainer_replicas,
             features={
-                "losses": ["cross_entropy"],
+                "losses": ["cross_entropy", "importance_sampling", "ppo", "cispo"],
                 "checkpointing": True,
                 "ray_namespace": self.config.ray.namespace,
                 "runtime_backend": "modal" if self.config.modal.enabled else "ray",
