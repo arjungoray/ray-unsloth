@@ -2,13 +2,17 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams
+from ray_unsloth.checkpoints import base_manifest, write_manifest
 from ray_unsloth.clients import service as service_module
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.service import ServiceClient
 from ray_unsloth.clients.training import TrainingClient
 from ray_unsloth.clients._remote import call, call_async
 from ray_unsloth.config import ModelConfig
+from ray_unsloth.errors import CheckpointError
 from ray_unsloth.runtime.modal import ModalActorHandle, ModalSession
 from ray_unsloth.types import (
     CheckpointRef,
@@ -443,3 +447,92 @@ def test_modal_actor_handle_get_tokenizer_loads_locally(monkeypatch):
 
     assert call(actor, "get_tokenizer").result() == "tokenizer"
     assert calls == [(("test/model",), {"trust_remote_code": False})]
+
+
+RESTORE_METHODS = [
+    "create_training_client_from_state",
+    "create_training_client_from_state_with_optimizer",
+]
+
+RESTORE_CONFIG = {
+    "model": {"base_model": "base/model"},
+    "lora": {"rank": 8, "target_modules": ["q_proj", "v_proj"]},
+}
+
+
+def _write_checkpoint(path, *, base_model="base/model", rank=8, target_modules=("q_proj", "v_proj")):
+    write_manifest(
+        path,
+        base_manifest(
+            kind="training_state",
+            step=1,
+            base_model=base_model,
+            lora={"rank": rank, "target_modules": list(target_modules)},
+            has_optimizer=True,
+        ),
+    )
+    return str(path)
+
+
+@pytest.mark.parametrize("method_name", RESTORE_METHODS)
+def test_restore_proceeds_when_manifest_matches_config(monkeypatch, tmp_path, method_name):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config=RESTORE_CONFIG)
+    path = _write_checkpoint(tmp_path / "checkpoint")
+
+    training = getattr(client, method_name)(path)
+
+    assert isinstance(training, TrainingClient)
+    assert client._session.training_kwargs["model_path"] == path
+
+
+@pytest.mark.parametrize("method_name", RESTORE_METHODS)
+def test_restore_raises_on_base_model_mismatch(monkeypatch, tmp_path, method_name):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config=RESTORE_CONFIG)
+    path = _write_checkpoint(tmp_path / "checkpoint", base_model="other/model")
+
+    with pytest.raises(CheckpointError) as exc_info:
+        getattr(client, method_name)(path)
+
+    assert "base_model mismatch" in str(exc_info.value)
+    # No actor was created because validation fails before session work.
+    assert client._session.training_kwargs is None
+
+
+@pytest.mark.parametrize("method_name", RESTORE_METHODS)
+def test_restore_raises_on_rank_mismatch(monkeypatch, tmp_path, method_name):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config=RESTORE_CONFIG)
+    path = _write_checkpoint(tmp_path / "checkpoint", rank=4)
+
+    with pytest.raises(CheckpointError) as exc_info:
+        getattr(client, method_name)(path)
+
+    message = str(exc_info.value)
+    assert "lora.rank" in message
+    assert "rank 4" in message
+    assert client._session.training_kwargs is None
+
+
+@pytest.mark.parametrize("method_name", RESTORE_METHODS)
+def test_restore_raises_on_missing_manifest(monkeypatch, tmp_path, method_name):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config=RESTORE_CONFIG)
+
+    with pytest.raises(CheckpointError):
+        getattr(client, method_name)(str(tmp_path / "missing"))
+
+    assert client._session.training_kwargs is None
+
+
+def test_restore_rank_override_validates_against_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config=RESTORE_CONFIG)
+    # Checkpoint saved at rank 4; default config rank is 8, but the rank override matches.
+    path = _write_checkpoint(tmp_path / "checkpoint", rank=4)
+
+    training = client.create_training_client_from_state(path, rank=4)
+
+    assert isinstance(training, TrainingClient)
+    assert client._session.training_kwargs["lora_rank"] == 4

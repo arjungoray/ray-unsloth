@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ray_unsloth.checkpoints import read_manifest, validate_restore_manifest
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.training import TrainingClient
 from ray_unsloth.config import RuntimeConfig, load_config, lora_target_modules_for_flags
@@ -140,6 +141,7 @@ class ServiceClient:
         rank = kwargs.pop("rank", None)
         metadata = kwargs.pop("metadata", None)
         del kwargs
+        self._validate_checkpoint_for_restore(path, base_model=base_model, rank=rank)
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
@@ -162,6 +164,7 @@ class ServiceClient:
         rank = kwargs.pop("rank", None)
         metadata = kwargs.pop("metadata", None)
         del kwargs
+        self._validate_checkpoint_for_restore(path, base_model=base_model, rank=rank)
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
@@ -190,6 +193,31 @@ class ServiceClient:
         close = getattr(self._session, "close", None)
         if callable(close):
             close()
+
+    def _validate_checkpoint_for_restore(
+        self,
+        path: str,
+        *,
+        base_model: str | None,
+        rank: int | None,
+    ) -> None:
+        """Validate a checkpoint manifest against the resolved config before restoring.
+
+        Reads the checkpoint ``manifest.json`` and compares ``base_model``, ``lora.rank``,
+        and ``lora.target_modules`` against the active configuration (honoring per-call
+        ``base_model``/``rank`` overrides). Raises :class:`CheckpointError` on a missing or
+        malformed manifest or any mismatch, before any actor is created or weights loaded.
+        """
+        manifest = read_manifest(path)
+        model_config, lora_config = self.config.resolve_model_configs(base_model)
+        expected_rank = rank if rank is not None else lora_config.rank
+        validate_restore_manifest(
+            manifest,
+            path=path,
+            base_model=model_config.base_model,
+            lora_rank=expected_rank,
+            target_modules=lora_config.target_modules,
+        )
 
     def _merged_metadata(
         self,
