@@ -29,6 +29,9 @@ class TrainingClient:
     def get_info(self):
         return FutureValueProxy(resolve(call(self._actor, "get_info")))
 
+    async def get_info_async(self):
+        return await call_async(self._actor, "get_info").result_async()
+
     def compute_logprobs(self, prompt: ModelInput | list[int]):
         return call(self._actor, "compute_logprobs", prompt)
 
