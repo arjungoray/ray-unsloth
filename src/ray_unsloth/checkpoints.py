@@ -46,11 +46,23 @@ def write_manifest(path: str | Path, manifest: dict[str, Any]) -> None:
 
 
 def read_manifest(path: str | Path) -> dict[str, Any]:
-    manifest_path = resolve_path(path) / MANIFEST_NAME
+    checkpoint_dir = resolve_path(path)
+    if not checkpoint_dir.exists():
+        raise CheckpointError(f"Checkpoint path does not exist: {checkpoint_dir}")
+    manifest_path = checkpoint_dir / MANIFEST_NAME
     if not manifest_path.exists():
         raise CheckpointError(f"Missing checkpoint manifest: {manifest_path}")
-    with manifest_path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise CheckpointError(f"Malformed checkpoint manifest at {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise CheckpointError(
+            f"Malformed checkpoint manifest at {manifest_path}: expected a JSON object, "
+            f"got {type(manifest).__name__}."
+        )
+    return manifest
 
 
 def atomic_checkpoint_dir(target: str | Path):
@@ -115,3 +127,62 @@ def base_manifest(
     if extra:
         manifest.update(extra)
     return manifest
+
+
+def validate_restore_manifest(
+    manifest: dict[str, Any],
+    *,
+    path: str | Path,
+    base_model: str,
+    lora_rank: int,
+    target_modules: list[str] | None = None,
+) -> None:
+    """Validate a checkpoint manifest against the active config before loading weights.
+
+    Raises :class:`CheckpointError` if the manifest is malformed or any key field
+    (``base_model``, ``lora.rank``, ``lora.target_modules``) disagrees with the active
+    configuration. Fields absent from the manifest are skipped so older checkpoints
+    remain loadable.
+    """
+
+    if not isinstance(manifest, dict):
+        raise CheckpointError(
+            f"Malformed checkpoint manifest for '{path}': expected a JSON object, "
+            f"got {type(manifest).__name__}."
+        )
+
+    manifest_base_model = manifest.get("base_model")
+    if manifest_base_model is not None and manifest_base_model != base_model:
+        raise CheckpointError(
+            f"base_model mismatch for checkpoint '{path}': active config base_model is "
+            f"'{base_model}', but the checkpoint manifest was saved from base_model "
+            f"'{manifest_base_model}'. Restore with base_model matching the checkpoint manifest "
+            "or load a checkpoint saved from the active base_model."
+        )
+
+    manifest_lora = manifest.get("lora")
+    if manifest_lora is None:
+        return
+    if not isinstance(manifest_lora, dict):
+        raise CheckpointError(
+            f"Malformed checkpoint manifest for '{path}': field 'lora' must be a JSON object, "
+            f"got {type(manifest_lora).__name__}."
+        )
+
+    manifest_rank = manifest_lora.get("rank")
+    if manifest_rank is not None and manifest_rank != lora_rank:
+        raise CheckpointError(
+            f"lora.rank mismatch for checkpoint '{path}': active config lora.rank is {lora_rank}, "
+            f"but the checkpoint manifest was saved with rank {manifest_rank}. Set lora.rank to the "
+            "checkpoint rank or load weights saved with the configured rank."
+        )
+
+    if target_modules is not None:
+        manifest_target_modules = manifest_lora.get("target_modules")
+        if manifest_target_modules is not None and list(manifest_target_modules) != list(target_modules):
+            raise CheckpointError(
+                f"lora.target_modules mismatch for checkpoint '{path}': active config "
+                f"lora.target_modules is {list(target_modules)!r}, but the checkpoint manifest was "
+                f"saved with {list(manifest_target_modules)!r}. Set lora.target_modules to match the "
+                "checkpoint or load weights saved for the configured target modules."
+            )

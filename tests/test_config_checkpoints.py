@@ -8,10 +8,12 @@ from ray_unsloth.checkpoints import (
     checkpoint_ref,
     read_manifest,
     resolve_path,
+    validate_restore_manifest,
     write_manifest,
 )
 from ray_unsloth.clients.rest import RestClient
 from ray_unsloth.config import RuntimeConfig
+from ray_unsloth.errors import CheckpointError
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
 
 
@@ -211,7 +213,7 @@ def test_engine_checkpoint_manifest_validation_names_mismatched_lora_fields(tmp_
         {"lora": {"rank": 8, "target_modules": ["q_proj", "v_proj"]}}
     ).lora
 
-    with pytest.raises(ValueError) as rank_exc:
+    with pytest.raises(CheckpointError) as rank_exc:
         engine._validate_checkpoint_manifest(
             {
                 "base_model": "base/model",
@@ -222,7 +224,7 @@ def test_engine_checkpoint_manifest_validation_names_mismatched_lora_fields(tmp_
     assert "lora.rank" in str(rank_exc.value)
     assert "rank 4" in str(rank_exc.value)
 
-    with pytest.raises(ValueError) as target_exc:
+    with pytest.raises(CheckpointError) as target_exc:
         engine._validate_checkpoint_manifest(
             {
                 "base_model": "base/model",
@@ -239,7 +241,7 @@ def test_engine_checkpoint_manifest_validation_names_base_model_field(tmp_path: 
     engine.model_config = RuntimeConfig.from_dict({"model": {"base_model": "expected/model"}}).model
     engine.lora_config = RuntimeConfig.from_dict({}).lora
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(CheckpointError) as exc_info:
         engine._validate_checkpoint_manifest(
             {"base_model": "checkpoint/model", "lora": {"rank": engine.lora_config.rank}},
             str(tmp_path),
@@ -249,6 +251,80 @@ def test_engine_checkpoint_manifest_validation_names_base_model_field(tmp_path: 
     assert "base_model mismatch" in message
     assert "expected/model" in message
     assert "checkpoint/model" in message
+
+
+def test_validate_restore_manifest_passes_when_fields_match():
+    validate_restore_manifest(
+        {"base_model": "base/model", "lora": {"rank": 8, "target_modules": ["q_proj", "v_proj"]}},
+        path="checkpoint",
+        base_model="base/model",
+        lora_rank=8,
+        target_modules=["q_proj", "v_proj"],
+    )
+
+
+def test_validate_restore_manifest_raises_on_base_model_mismatch():
+    with pytest.raises(CheckpointError) as exc_info:
+        validate_restore_manifest(
+            {"base_model": "checkpoint/model", "lora": {"rank": 8}},
+            path="checkpoint",
+            base_model="active/model",
+            lora_rank=8,
+        )
+    message = str(exc_info.value)
+    assert "base_model mismatch" in message
+    assert "active/model" in message
+    assert "checkpoint/model" in message
+
+
+def test_validate_restore_manifest_raises_on_rank_mismatch():
+    with pytest.raises(CheckpointError) as exc_info:
+        validate_restore_manifest(
+            {"base_model": "base/model", "lora": {"rank": 4}},
+            path="checkpoint",
+            base_model="base/model",
+            lora_rank=16,
+        )
+    message = str(exc_info.value)
+    assert "lora.rank" in message
+    assert "16" in message
+    assert "rank 4" in message
+
+
+def test_validate_restore_manifest_raises_on_target_modules_mismatch():
+    with pytest.raises(CheckpointError) as exc_info:
+        validate_restore_manifest(
+            {"base_model": "base/model", "lora": {"rank": 8, "target_modules": ["q_proj"]}},
+            path="checkpoint",
+            base_model="base/model",
+            lora_rank=8,
+            target_modules=["q_proj", "v_proj"],
+        )
+    message = str(exc_info.value)
+    assert "lora.target_modules" in message
+    assert "['q_proj']" in message
+
+
+def test_read_manifest_raises_checkpoint_error_on_missing_path(tmp_path: Path):
+    with pytest.raises(CheckpointError) as exc_info:
+        read_manifest(tmp_path / "does-not-exist")
+    assert "does not exist" in str(exc_info.value)
+
+
+def test_read_manifest_raises_checkpoint_error_on_missing_manifest(tmp_path: Path):
+    (tmp_path / "checkpoint").mkdir()
+    with pytest.raises(CheckpointError) as exc_info:
+        read_manifest(tmp_path / "checkpoint")
+    assert "Missing checkpoint manifest" in str(exc_info.value)
+
+
+def test_read_manifest_raises_checkpoint_error_on_malformed_json(tmp_path: Path):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "manifest.json").write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(CheckpointError) as exc_info:
+        read_manifest(checkpoint)
+    assert "Malformed checkpoint manifest" in str(exc_info.value)
 
 
 def test_rest_client_lists_and_publishes_checkpoints(tmp_path: Path):

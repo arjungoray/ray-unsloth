@@ -15,6 +15,7 @@ from ray_unsloth.checkpoints import (
     new_checkpoint_path,
     read_manifest,
     resolve_path,
+    validate_restore_manifest,
     write_manifest,
 )
 from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
@@ -1428,35 +1429,13 @@ class UnslothEngine:
         self.load_state(path, with_optimizer=True)
 
     def _validate_checkpoint_manifest(self, manifest: dict[str, Any], path: str) -> None:
-        manifest_base_model = manifest.get("base_model")
-        if manifest_base_model is not None and manifest_base_model != self.model_config.base_model:
-            raise ValueError(
-                f"base_model mismatch for checkpoint '{path}': engine is loaded with "
-                f"base_model '{self.model_config.base_model}', but the checkpoint manifest "
-                f"was saved from base_model '{manifest_base_model}'. Create the client with "
-                "base_model matching the checkpoint manifest or load a checkpoint from the current base_model."
-            )
-
-        manifest_lora = manifest.get("lora") or {}
-        if not isinstance(manifest_lora, dict):
-            raise ValueError(f"lora mismatch for checkpoint '{path}': manifest field lora must be a mapping.")
-
-        manifest_rank = manifest_lora.get("rank")
-        if manifest_rank is not None and manifest_rank != self.lora_config.rank:
-            raise ValueError(
-                f"rank mismatch for checkpoint '{path}': config field lora.rank is "
-                f"{self.lora_config.rank}, but the checkpoint manifest was saved with rank {manifest_rank}. "
-                "Set lora.rank to the checkpoint rank or load weights saved with the configured rank."
-            )
-
-        manifest_target_modules = manifest_lora.get("target_modules")
-        if manifest_target_modules is not None and list(manifest_target_modules) != list(self.lora_config.target_modules):
-            raise ValueError(
-                f"target_modules mismatch for checkpoint '{path}': config field lora.target_modules is "
-                f"{list(self.lora_config.target_modules)!r}, but the checkpoint manifest was saved with "
-                f"{list(manifest_target_modules)!r}. Set lora.target_modules to match the checkpoint "
-                "or load weights saved for the configured target modules."
-            )
+        validate_restore_manifest(
+            manifest,
+            path=path,
+            base_model=self.model_config.base_model,
+            lora_rank=self.lora_config.rank,
+            target_modules=self.lora_config.target_modules,
+        )
 
     def save_weights_for_sampler(self, path: str | None = None) -> SaveWeightsForSamplerResponse:
         target = self._checkpoint_target(path, prefix="sampler")
