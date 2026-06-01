@@ -22,6 +22,7 @@ from ray_unsloth.types import (
     SampleResponse,
     SaveWeightsForSamplerResponse,
     TensorData,
+    TrainingClientInfo,
 )
 
 
@@ -51,6 +52,13 @@ class FakeTrainerActor:
     def optim_step(self, adam_params):
         assert isinstance(adam_params, AdamParams)
         return OptimStepResult(step=1)
+
+    def get_info(self):
+        return TrainingClientInfo(
+            session_id="train",
+            base_model="Qwen/Qwen3.5-4B",
+            lora_rank=16,
+        )
 
     def save_weights_for_sampler(self, path=None):
         self.saved_sampler_path = path
@@ -159,6 +167,18 @@ def test_training_client_async_aliases_and_create_sampling_client():
 
     assert isinstance(sampler, SamplingClient)
     assert service.model_path == "/tmp/sampler"
+
+
+def test_training_client_get_info_async_matches_sync():
+    client = TrainingClient(session_id="train", actor=FakeTrainerActor(), service=FakeService())
+
+    info = asyncio.run(client.get_info_async())
+
+    assert isinstance(info, TrainingClientInfo)
+    assert info.session_id == "train"
+    assert info.base_model == "Qwen/Qwen3.5-4B"
+    assert info.lora_rank == 16
+    assert info == client.get_info()
 
 
 def test_tinker_first_sft_training_primitive_loop_shape(monkeypatch):

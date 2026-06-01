@@ -16,6 +16,10 @@ eggs/
 .eggs/
 lib/
 lib64/
+# tinker compat package is real source, not a build artifact
+!src/tinker/lib/
+!src/tinker/lib/**
+src/tinker/lib/**/__pycache__/
 parts/
 sdist/
 var/
