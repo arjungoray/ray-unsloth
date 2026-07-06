@@ -75,10 +75,26 @@ def _module_available(module_name: str) -> bool:
 
 
 def _flash_attention_2_available() -> bool:
+    try:
+        from ray_unsloth.runtime.unsloth import engine as engine_module
+
+        override = getattr(engine_module, "_flash_attention_2_available", None)
+        if callable(override) and override is not _flash_attention_2_available:
+            return bool(override())
+    except Exception:
+        pass
     return _module_available("flash_attn")
 
 
 def _flash_attention_3_available() -> bool:
+    try:
+        from ray_unsloth.runtime.unsloth import engine as engine_module
+
+        override = getattr(engine_module, "_flash_attention_3_available", None)
+        if callable(override) and override is not _flash_attention_3_available:
+            return bool(override())
+    except Exception:
+        pass
     return _module_available("flash_attn_interface")
 
 

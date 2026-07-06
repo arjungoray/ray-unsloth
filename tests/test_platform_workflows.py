@@ -121,6 +121,32 @@ def test_async_training_recording_preserves_two_stage_future_shape(tmp_path):
     assert RunStore(tmp_path / "checkpoints").read_metrics(run_id)
 
 
+def test_training_run_context_manager_marks_completed(tmp_path):
+    service = ServiceClient(config=_config(tmp_path))
+    with service.training_run() as trainer:
+        trainer.forward_backward([_datum()]).result()
+        run_id = trainer.run_id
+    service.close()
+
+    assert run_id is not None
+    run = RunStore(tmp_path / "checkpoints").get_run(run_id)
+    assert run is not None
+    assert run.status == "completed"
+
+
+def test_training_run_context_manager_marks_failed(tmp_path):
+    service = ServiceClient(config=_config(tmp_path))
+    with pytest.raises(RuntimeError, match="boom"), service.training_run() as trainer:
+        run_id = trainer.run_id
+        raise RuntimeError("boom")
+    service.close()
+
+    assert run_id is not None
+    run = RunStore(tmp_path / "checkpoints").get_run(run_id)
+    assert run is not None
+    assert run.status == "failed"
+
+
 def test_provider_registry_validation_and_plans(tmp_path):
     config = RuntimeConfig.from_dict(_config(tmp_path, provider="skypilot", provider_options={"gpu": "L4"}))
 

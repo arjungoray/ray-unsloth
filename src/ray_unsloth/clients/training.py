@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from ray_unsloth.clients._kwargs import warn_ignored
@@ -18,6 +19,7 @@ class TrainingClient:
         self._actor = actor
         self._service = service
         self._recorder = recorder
+        self._closed = False
 
     @property
     def run_id(self) -> str | None:
@@ -292,6 +294,28 @@ class TrainingClient:
 
     def create_live_sampling_client_async(self, name: str = "live-policy") -> SamplingClient:
         return self.create_live_sampling_client(name=name)
+
+    def close(self, status: str = "completed") -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        recorder = self._recorder
+        if recorder is not None:
+            with contextlib.suppress(Exception):
+                recorder.finish(status=status)
+
+        actor = self._actor
+        self._actor = None
+        self._service = None
+        if actor is None:
+            return
+        for method_name in ("close", "release", "shutdown"):
+            method = getattr(actor, method_name, None)
+            if callable(method):
+                with contextlib.suppress(Exception):
+                    method()
+                break
 
     def save_weights_and_get_sampling_client(
         self,

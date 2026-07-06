@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Any
 
 from ray_unsloth.checkpoints import read_manifest, validate_restore_manifest
@@ -15,6 +17,57 @@ from ray_unsloth.providers import get_provider, resolve_provider_name
 from ray_unsloth.runtime.modal import ModalSession
 from ray_unsloth.runtime.ray import RaySession
 from ray_unsloth.types import GetServerCapabilitiesResponse
+
+
+class _TrainingRunContext:
+    def __init__(self, service: ServiceClient, *, name: str | None, client_kwargs: dict[str, Any]):
+        self._service = service
+        self._name = name
+        self._client_kwargs = dict(client_kwargs)
+        self._client: TrainingClient | None = None
+
+    def _apply_name(self, client: TrainingClient) -> None:
+        if self._name is None:
+            return
+        store = getattr(self._service, "_store", None)
+        run_id = getattr(client, "run_id", None)
+        if store is None or run_id is None:
+            return
+        store.update_run(run_id, name=self._name)
+
+    async def _create_client_async(self) -> TrainingClient:
+        client = await self._service.create_lora_training_client_async(**self._client_kwargs)
+        self._apply_name(client)
+        return client
+
+    def _create_client(self) -> TrainingClient:
+        client = self._service.create_lora_training_client(**self._client_kwargs)
+        self._apply_name(client)
+        return client
+
+    def __enter__(self) -> TrainingClient:
+        self._client = self._create_client()
+        return self._client
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        del exc, tb
+        if self._client is not None:
+            self._client.close(status="failed" if exc_type is not None else "completed")
+        return False
+
+    async def __aenter__(self) -> TrainingClient:
+        self._client = await self._create_client_async()
+        return self._client
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        del exc, tb
+        if self._client is not None:
+            if exc_type is None:
+                await asyncio.to_thread(self._client.close, status="completed")
+            else:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self._client.close, status="failed")
+        return False
 
 
 class ServiceClient:
@@ -159,8 +212,8 @@ class ServiceClient:
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self, recorder=recorder)
 
-    def create_lora_training_client_async(self, *args, **kwargs) -> TrainingClient:
-        return self.create_lora_training_client(*args, **kwargs)
+    async def create_lora_training_client_async(self, *args, **kwargs) -> TrainingClient:
+        return await asyncio.to_thread(self.create_lora_training_client, *args, **kwargs)
 
     def create_sampling_client(
         self,
@@ -188,8 +241,8 @@ class ServiceClient:
         )
         return SamplingClient(session_id=session_id, actors=actors)
 
-    def create_sampling_client_async(self, *args, **kwargs) -> SamplingClient:
-        return self.create_sampling_client(*args, **kwargs)
+    async def create_sampling_client_async(self, *args, **kwargs) -> SamplingClient:
+        return await asyncio.to_thread(self.create_sampling_client, *args, **kwargs)
 
     def create_training_client_from_state(
         self,
@@ -223,8 +276,8 @@ class ServiceClient:
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self, recorder=recorder)
 
-    def create_training_client_from_state_async(self, *args, **kwargs) -> TrainingClient:
-        return self.create_training_client_from_state(*args, **kwargs)
+    async def create_training_client_from_state_async(self, *args, **kwargs) -> TrainingClient:
+        return await asyncio.to_thread(self.create_training_client_from_state, *args, **kwargs)
 
     def create_training_client_from_state_with_optimizer(
         self,
@@ -258,8 +311,11 @@ class ServiceClient:
         )
         return TrainingClient(session_id=session_id, actor=actor, service=self, recorder=recorder)
 
-    def create_training_client_from_state_with_optimizer_async(self, *args, **kwargs) -> TrainingClient:
-        return self.create_training_client_from_state_with_optimizer(*args, **kwargs)
+    async def create_training_client_from_state_with_optimizer_async(self, *args, **kwargs) -> TrainingClient:
+        return await asyncio.to_thread(self.create_training_client_from_state_with_optimizer, *args, **kwargs)
+
+    def training_run(self, name: str | None = None, **client_kwargs: Any):
+        return _TrainingRunContext(self, name=name, client_kwargs=client_kwargs)
 
     def create_rest_client(self):
         from ray_unsloth.clients.rest import RestClient
