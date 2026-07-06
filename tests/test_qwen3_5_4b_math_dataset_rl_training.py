@@ -5,7 +5,6 @@ from pathlib import Path
 
 from ray_unsloth.config import RuntimeConfig
 
-
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "qwen3_5_4b_math_dataset_rl_training.py"
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "qwen3_5_4b_1x_l4.yaml"
 SPEC = importlib.util.spec_from_file_location("qwen3_5_4b_math_dataset_rl_training", EXAMPLE_PATH)
@@ -50,8 +49,8 @@ def test_qwen3_5_4b_wrapper_points_recipe_at_4b_settings(monkeypatch):
 
     monkeypatch.setattr(qwen3_5_4b_math_dataset_rl_training.recipe, "train", fake_train)
 
-    import asyncio
     import argparse
+    import asyncio
 
     asyncio.run(qwen3_5_4b_math_dataset_rl_training.train(argparse.Namespace(config=CONFIG_PATH)))
 

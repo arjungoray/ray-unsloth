@@ -3,9 +3,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from ray_unsloth import GeneratedSequence, ModelInput, SampleResponse
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
-
 
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "overfit_smoke_test.py"
 SPEC = importlib.util.spec_from_file_location("overfit_smoke_test", EXAMPLE_PATH)
@@ -59,9 +59,7 @@ def test_build_sft_datum_masks_prompt_tokens():
 
     assert prompt_input.to_ints() == [ord(char) for char in "Question:"]
     assert datum.model_input.to_ints() == [ord(char) for char in "Question: answer"]
-    assert datum.loss_fn_inputs["labels"] == [-100] * len("Question:") + [
-        ord(char) for char in " answer"
-    ]
+    assert datum.loss_fn_inputs["labels"] == [-100] * len("Question:") + [ord(char) for char in " answer"]
     assert target_token_count == len(" answer")
 
 
@@ -70,9 +68,7 @@ def test_build_sft_datum_strips_prompt_only_eos():
 
     assert prompt_input.to_ints() == [ord(char) for char in "Question:"]
     assert datum.model_input.to_ints() == [ord(char) for char in "Question: answer"] + [99]
-    assert datum.loss_fn_inputs["labels"] == [-100] * len("Question:") + [
-        ord(char) for char in " answer"
-    ] + [99]
+    assert datum.loss_fn_inputs["labels"] == [-100] * len("Question:") + [ord(char) for char in " answer"] + [99]
     assert target_token_count == len(" answer") + 1
 
 

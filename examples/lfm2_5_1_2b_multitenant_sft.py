@@ -29,7 +29,6 @@ from ray_unsloth.clients._remote import resolve
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.download import modal_volume_get_command
 
-
 _SFT_PATH = Path(__file__).with_name("tinker_first_sft_training.py")
 _SFT_SPEC = importlib.util.spec_from_file_location("tinker_first_sft_training_recipe", _SFT_PATH)
 if _SFT_SPEC is None or _SFT_SPEC.loader is None:
@@ -80,7 +79,7 @@ class WandbRunLogger:
         run_config: dict[str, Any],
         group: str,
         job_type: str,
-    ) -> "WandbRunLogger":
+    ) -> WandbRunLogger:
         wandb_settings = dict(settings.get("wandb", {}))
         enabled = bool(wandb_settings.get("enabled", True))
         if not enabled:
@@ -158,8 +157,7 @@ def conversation(system_prompt: str, user: str, assistant: str) -> list[dict[str
 
 def tenant_specs() -> list[TenantSpec]:
     math_prompt = (
-        "You are Arc, a compact math tutor. Show the arithmetic in one short line, "
-        "then give the final answer."
+        "You are Arc, a compact math tutor. Show the arithmetic in one short line, then give the final answer."
     )
     style_prompt = (
         "You are Vale, a careful writing coach. Rewrite text with clean structure, "
@@ -274,8 +272,7 @@ async def train_one_tenant(
         )
         tokenizer = resolve(training_client.get_tokenizer())
         training_data = [
-            sft.conversation_to_datum(item, tokenizer, max_length=max_length)
-            for item in spec.conversations
+            sft.conversation_to_datum(item, tokenizer, max_length=max_length) for item in spec.conversations
         ]
         logger.log(
             {
@@ -411,8 +408,7 @@ async def train(args: argparse.Namespace) -> None:
         orchestrator.log(payload, step=int(settings.get("steps", 12)))
         for result in results:
             print(
-                f"{result.name}: session={result.session_id} "
-                f"loss={result.final_loss:.4f} sampler={result.sampler_path}"
+                f"{result.name}: session={result.session_id} loss={result.final_loss:.4f} sampler={result.sampler_path}"
             )
     finally:
         service_client.close()

@@ -41,6 +41,53 @@ examples = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+ray_unsloth = ["py.typed", "ui/static/**"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  "E501",   # line length is governed by `ruff format`; leftovers are long strings/URLs
+  "RUF001", # em-dashes in user-facing messages are intentional
+]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+  "ray_unsloth.plugins",
+  "ray_unsloth.store",
+  "ray_unsloth.losses",
+  "ray_unsloth.recording",
+  "ray_unsloth.errors",
+  "ray_unsloth.evals.*",
+  "ray_unsloth.export.*",
+  "ray_unsloth.providers.*",
+]
+strict = true
+ignore_errors = false
+
+[[tool.mypy.overrides]]
+module = [
+  "ray_unsloth.runtime.*",
+  "ray_unsloth.clients.*",
+  "ray_unsloth.types",
+  "ray_unsloth.config",
+  "ray_unsloth.checkpoints",
+  "ray_unsloth.download",
+  "ray_unsloth.cli",
+  "ray_unsloth.ui.*",
+  "tinker.*",
+]
+ignore_errors = true
+
 [project.scripts]
 ray-unsloth = "ray_unsloth.cli:main"
 

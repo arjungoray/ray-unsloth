@@ -33,8 +33,9 @@ see ``examples/sample_plugin`` for a working DPO-style example.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, cast
 
 from ray_unsloth.errors import UnsupportedLossError
 from ray_unsloth.plugins import losses as _registry
@@ -78,7 +79,7 @@ def register_loss(spec: LossSpec, *, replace: bool = False) -> LossSpec:
 
 def get_loss(name: str) -> LossSpec:
     try:
-        return _registry.get(name)
+        return cast(LossSpec, _registry.get(name))
     except Exception:
         raise UnsupportedLossError(
             f"Unsupported loss '{name}'. Registered losses: {', '.join(_registry.names())}."
@@ -110,12 +111,12 @@ def validate_datum_inputs(spec: LossSpec, loss_fn_inputs: dict[str, Any], *, dat
 # ---------------------------------------------------------------------------
 
 
-def _importance_sampling_token_loss(*, ratio, advantages, current_logprobs, config):
+def _importance_sampling_token_loss(*, ratio: Any, advantages: Any, current_logprobs: Any, config: dict[str, Any]) -> Any:
     del current_logprobs, config
     return -ratio * advantages
 
 
-def _ppo_token_loss(*, ratio, advantages, current_logprobs, config):
+def _ppo_token_loss(*, ratio: Any, advantages: Any, current_logprobs: Any, config: dict[str, Any]) -> Any:
     del current_logprobs
     import torch
 
@@ -123,7 +124,7 @@ def _ppo_token_loss(*, ratio, advantages, current_logprobs, config):
     return -torch.minimum(ratio * advantages, clipped_ratio * advantages)
 
 
-def _cispo_token_loss(*, ratio, advantages, current_logprobs, config):
+def _cispo_token_loss(*, ratio: Any, advantages: Any, current_logprobs: Any, config: dict[str, Any]) -> Any:
     clipped_ratio = ratio.detach().clamp(config["clip_low_threshold"], config["clip_high_threshold"])
     return -clipped_ratio * advantages * current_logprobs
 

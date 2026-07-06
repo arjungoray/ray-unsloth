@@ -39,7 +39,6 @@ from ray_unsloth import (
 )
 from ray_unsloth.download import modal_volume_get_command
 
-
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="Calling super")
 
@@ -318,7 +317,7 @@ async def collect_rollouts(
 
     sample_results = await asyncio.gather(*sample_coros)
     rollouts = []
-    for problem, prompt, sample_result in zip(problems, prompts, sample_results):
+    for problem, prompt, sample_result in zip(problems, prompts, sample_results, strict=False):
         rewards = []
         raw_sequences = []
         for sequence in sample_result.sequences:
@@ -336,7 +335,7 @@ async def collect_rollouts(
                 reward=reward,
                 advantage=advantage,
             )
-            for (sequence, text, reward), advantage in zip(raw_sequences, advantages)
+            for (sequence, text, reward), advantage in zip(raw_sequences, advantages, strict=False)
         ]
         degenerate = all(advantage == 0.0 for advantage in advantages)
         rollouts.append(

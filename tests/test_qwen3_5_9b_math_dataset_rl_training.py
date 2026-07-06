@@ -3,7 +3,6 @@ import py_compile
 import sys
 from pathlib import Path
 
-
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "qwen3_5_9b_math_dataset_rl_training.py"
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "qwen3_5_9b_2x_l4_sharded.yaml"
 SPEC = importlib.util.spec_from_file_location("qwen3_5_9b_math_dataset_rl_training", EXAMPLE_PATH)

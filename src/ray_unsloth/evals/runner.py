@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from ray_unsloth.clients._remote import resolve
 from ray_unsloth.evals.scorers import get_scorer
@@ -21,10 +21,14 @@ class EvalItem:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> "EvalItem":
+    def from_mapping(cls, data: dict[str, Any]) -> EvalItem:
         prompt = data.get("prompt", data.get("input", data.get("question", "")))
         expected = data.get("expected", data.get("answer"))
-        metadata = {key: value for key, value in data.items() if key not in {"prompt", "input", "question", "expected", "answer"}}
+        metadata = {
+            key: value
+            for key, value in data.items()
+            if key not in {"prompt", "input", "question", "expected", "answer"}
+        }
         return cls(prompt=prompt, expected=expected, metadata=metadata)
 
     def to_payload(self) -> dict[str, Any]:
@@ -79,7 +83,9 @@ class RegressionGate:
         return not failures, failures
 
 
-def load_dataset(dataset: str | list[dict[str, Any]] | list[EvalItem], *, max_samples: int | None = None) -> list[EvalItem]:
+def load_dataset(
+    dataset: str | list[dict[str, Any]] | list[EvalItem], *, max_samples: int | None = None
+) -> list[EvalItem]:
     if isinstance(dataset, str):
         path = Path(dataset).expanduser()
         if not path.exists():
@@ -104,7 +110,9 @@ def _prompt_to_input(prompt: str | list[int], tokenizer: Any | None, *, add_spec
     return ModelInput.from_ints(prompt.encode("utf-8", errors="replace"))
 
 
-def run_eval(sampling_client: Any, spec: EvalSpec, *, store: Any | None = None, run_id: str | None = None) -> EvalReport:
+def run_eval(
+    sampling_client: Any, spec: EvalSpec, *, store: Any | None = None, run_id: str | None = None
+) -> EvalReport:
     scorer = get_scorer(spec.scorer)
     tokenizer = None
     get_tokenizer = getattr(sampling_client, "get_tokenizer", None)

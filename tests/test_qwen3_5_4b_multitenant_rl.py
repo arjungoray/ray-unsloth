@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 from ray_unsloth.config import RuntimeConfig
 
-
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "qwen3_5_4b_multitenant_rl.py"
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "qwen3_5_4b_1x_a100_multitenant_rl.yaml"
 SPEC = importlib.util.spec_from_file_location("qwen3_5_4b_multitenant_rl", EXAMPLE_PATH)

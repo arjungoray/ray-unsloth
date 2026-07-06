@@ -195,7 +195,7 @@ class _BigramTable:
         return {str(prev): row for prev, row in self.logits.items() if row}
 
     @classmethod
-    def from_json(cls, data: dict[str, Any], seed: int) -> "_BigramTable":
+    def from_json(cls, data: dict[str, Any], seed: int) -> _BigramTable:
         table = cls(seed)
         for prev, row in data.items():
             table.logits[int(prev)] = {int(t): float(v) for t, v in row.items()}
@@ -276,7 +276,9 @@ class FakeTrainerActor:
             raw_targets = datum.loss_fn_inputs.get("target_tokens", datum.loss_fn_inputs.get("labels"))
             targets = [int(v) for v in _tensor_values(raw_targets)] if raw_targets is not None else list(tokens)
             raw_weights = datum.loss_fn_inputs.get("weights")
-            weights = [float(v) for v in _tensor_values(raw_weights)] if raw_weights is not None else [1.0] * len(targets)
+            weights = (
+                [float(v) for v in _tensor_values(raw_weights)] if raw_weights is not None else [1.0] * len(targets)
+            )
             row_logprobs: list[float] = []
             for pos, target in enumerate(targets[: len(tokens)]):
                 prev = tokens[pos - 1] if pos > 0 else 0
@@ -441,9 +443,7 @@ class FakeTrainerActor:
             prev = prompt_tokens[-1] if prompt_tokens else 0
             finish_reason = "length"
             for _ in range(sampling_params.max_tokens):
-                token, logprob = self.table.sample_next(
-                    prev, rng, sampling_params.temperature, sampling_params.top_p
-                )
+                token, logprob = self.table.sample_next(prev, rng, sampling_params.temperature, sampling_params.top_p)
                 generated.append(token)
                 logprobs.append(logprob)
                 prev = token
@@ -467,7 +467,7 @@ class FakeTrainerActor:
 
     # -- checkpoints ------------------------------------------------------------
 
-    def _checkpoint_target(self, path: str | None, *, kind: str):
+    def _checkpoint_target(self, path: str | None, *, kind: str) -> Any:
         from pathlib import Path
 
         if path is None:
@@ -508,14 +508,10 @@ class FakeTrainerActor:
 
     def _load_checkpoint(self, path: str) -> None:
         manifest = read_manifest(path)
-        validate_restore_manifest(
-            manifest, path=path, base_model=self.base_model, lora_rank=self.lora_rank
-        )
+        validate_restore_manifest(manifest, path=path, base_model=self.base_model, lora_rank=self.lora_rank)
         weights_path = resolve_path(path) / WEIGHTS_FILE
         if not weights_path.exists():
-            raise CheckpointError(
-                f"Checkpoint at {path} has no {WEIGHTS_FILE}; it was not saved by the fake engine."
-            )
+            raise CheckpointError(f"Checkpoint at {path} has no {WEIGHTS_FILE}; it was not saved by the fake engine.")
         self.table = _BigramTable.from_json(json.loads(weights_path.read_text()), self.seed)
         step = manifest.get("step")
         if isinstance(step, int):
@@ -562,10 +558,10 @@ class FakeTrainerActor:
 class _Scalar(float):
     """Float with the tiny tensor surface the built-in token losses use."""
 
-    def clamp(self, low: float, high: float) -> "_Scalar":
+    def clamp(self, low: float, high: float) -> _Scalar:
         return _Scalar(min(max(float(self), low), high))
 
-    def detach(self) -> "_Scalar":
+    def detach(self) -> _Scalar:
         return self
 
 
@@ -621,7 +617,7 @@ class FakeSamplerActor:
 class FakeSession:
     """In-process session satisfying SessionProtocol with plain-object actors."""
 
-    def __init__(self, config: "RuntimeConfig"):
+    def __init__(self, config: RuntimeConfig):
         self.config = config
         self.training_actors: dict[str, Any] = {}
         self.sampler_actors: dict[str, list[Any]] = {}
@@ -696,7 +692,7 @@ class FakeProvider(RuntimeProvider):
             cost_estimation=False,
         )
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         return LaunchPlan(
             provider=self.name,
             summary="Run the in-process fake engine (no GPU, no Ray, no downloads).",
@@ -707,5 +703,5 @@ class FakeProvider(RuntimeProvider):
             ],
         )
 
-    def connect(self, config: "RuntimeConfig") -> SessionProtocol:
+    def connect(self, config: RuntimeConfig) -> SessionProtocol:
         return FakeSession(config)

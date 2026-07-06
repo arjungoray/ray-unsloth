@@ -26,11 +26,12 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ray_unsloth.checkpoints import resolve_path
 
 STORE_DIR = "_store"
+SCHEMA_VERSION = 1
 
 
 @dataclass(slots=True)
@@ -47,6 +48,7 @@ class RunRecord:
     finished_at: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
+    schema: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -63,6 +65,7 @@ class CheckpointRecord:
     created_at: float = 0.0
     base_model: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    schema: int = SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,6 +113,7 @@ class RunStore:
         run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         now = time.time()
         record = RunRecord(
+            schema=SCHEMA_VERSION,
             id=run_id,
             name=name or run_id,
             status="running",
@@ -165,9 +169,8 @@ class RunStore:
 
     def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
         line = json.dumps(payload, sort_keys=True)
-        with self._lock:
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
+        with self._lock, path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
 
     def append_metrics(self, run_id: str, metrics: dict[str, Any]) -> None:
         payload = {"time": time.time(), **metrics}
@@ -224,6 +227,7 @@ class RunStore:
         metadata: dict[str, Any] | None = None,
     ) -> CheckpointRecord:
         record = CheckpointRecord(
+            schema=SCHEMA_VERSION,
             path=str(path),
             run_id=run_id,
             step=step,
@@ -280,7 +284,7 @@ class RunStore:
         path = self._evals_dir() / f"{eval_id}.json"
         if not path.exists():
             return None
-        return json.loads(path.read_text())
+        return cast(dict[str, Any], json.loads(path.read_text()))
 
     def list_evals(self) -> list[dict[str, Any]]:
         reports = []

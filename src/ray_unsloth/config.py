@@ -8,7 +8,6 @@ from typing import Any
 
 import yaml
 
-
 DEFAULT_LORA_TARGET_MODULES = [
     "q_proj",
     "k_proj",
@@ -70,7 +69,7 @@ class ModelRuntimeConfig:
         default_model: ModelConfig,
         default_lora: LoRAConfig,
         name: str = "<name>",
-    ) -> "ModelRuntimeConfig":
+    ) -> ModelRuntimeConfig:
         return cls(
             model=_replace_dataclass(default_model, data.get("model", {}), path=f"model_configs.{name}.model"),
             lora=_replace_dataclass(default_lora, data.get("lora", {}), path=f"model_configs.{name}.lora"),
@@ -174,13 +173,13 @@ class RuntimeConfig:
             )
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "RuntimeConfig":
+    def from_file(cls, path: str | Path) -> RuntimeConfig:
         with Path(path).open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "RuntimeConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> RuntimeConfig:
         data = data or {}
         model_data = data.get("model", {})
         default_model_config: str | None = None
@@ -317,10 +316,7 @@ def _build_dataclass(cls, data: dict[str, Any], *, path: str):
     field_names = {field.name for field in fields(cls)}
     unknown = sorted(set(data) - field_names)
     if unknown:
-        raise ValueError(
-            f"Unknown config field(s) in {path}: {unknown}. "
-            f"Valid fields: {sorted(field_names)}."
-        )
+        raise ValueError(f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.")
     try:
         return cls(**data)
     except TypeError as exc:
@@ -332,10 +328,7 @@ def _replace_dataclass(instance, updates: dict[str, Any], *, path: str):
     field_names = set(values)
     unknown = sorted(set(updates) - field_names)
     if unknown:
-        raise ValueError(
-            f"Unknown config field(s) in {path}: {unknown}. "
-            f"Valid fields: {sorted(field_names)}."
-        )
+        raise ValueError(f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.")
     values.update(updates)
     return type(instance)(**values)
 

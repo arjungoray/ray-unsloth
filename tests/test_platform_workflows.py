@@ -58,6 +58,53 @@ def test_fake_provider_training_records_metrics_and_checkpoint_lineage(tmp_path)
     assert sampler_checkpoint.path
 
 
+def test_store_schema_versions_round_trip_and_load_old_records(tmp_path):
+    store = RunStore(tmp_path / "checkpoints")
+
+    old_run_path = store._run_file("run-old")
+    old_run_path.parent.mkdir(parents=True, exist_ok=True)
+    old_run_path.write_text(
+        json.dumps(
+            {
+                "id": "run-old",
+                "name": "legacy",
+                "status": "running",
+                "provider": "fake",
+                "base_model": "Test/Test-1B",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+    checkpoints_path = store._checkpoints_file()
+    checkpoints_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoints_path.write_text(
+        json.dumps(
+            {
+                "path": "/tmp/legacy",
+                "run_id": "run-old",
+                "step": 1,
+                "kind": "training_state",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    old_run = store.get_run("run-old")
+    old_checkpoint = store.list_checkpoints()[0]
+    new_run = store.create_run(provider="fake", base_model="Test/Test-1B")
+    new_checkpoint = store.record_checkpoint(path="/tmp/new", run_id=new_run.id, step=2, kind="training_state")
+
+    assert old_run is not None
+    assert old_run.schema == 1
+    assert old_checkpoint.schema == 1
+    assert json.loads(store._run_file(new_run.id).read_text())["schema"] == 1
+    assert json.loads(store._checkpoints_file().read_text().splitlines()[-1])["schema"] == 1
+    assert new_checkpoint.schema == 1
+
+
 def test_async_training_recording_preserves_two_stage_future_shape(tmp_path):
     async def run():
         service = ServiceClient(config=_config(tmp_path))
@@ -163,6 +210,7 @@ def test_cli_run_eval_export_and_runs(tmp_path, capsys):
 def test_ui_api_uses_real_store(tmp_path):
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
+
     from ray_unsloth.ui.server import create_app
 
     config = RuntimeConfig.from_dict(_config(tmp_path))

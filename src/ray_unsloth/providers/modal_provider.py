@@ -37,7 +37,7 @@ class ModalProvider(RuntimeProvider):
             docs_url="https://arjungoray.github.io/ray-unsloth/guides/runtimes",
         )
 
-    def validate(self, config: "RuntimeConfig") -> list[ValidationIssue]:
+    def validate(self, config: RuntimeConfig) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         modal_config = config.modal
         if modal_config.gpu not in _MODAL_GPUS:
@@ -68,7 +68,7 @@ class ModalProvider(RuntimeProvider):
             )
         return issues
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         modal_config = config.modal
         fit = estimate_gpu_fit(config.model, config.lora, gpu=modal_config.gpu)
         catalog = GPU_CATALOG.get(modal_config.gpu)
@@ -89,7 +89,7 @@ class ModalProvider(RuntimeProvider):
             estimated_hourly_cost_usd=hourly,
         )
 
-    def connect(self, config: "RuntimeConfig") -> SessionProtocol:
+    def connect(self, config: RuntimeConfig) -> SessionProtocol:
         try:
             import modal  # noqa: F401
         except ImportError:

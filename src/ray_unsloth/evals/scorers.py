@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any, cast
 
 from ray_unsloth.plugins import scorers as _registry
 
@@ -16,7 +17,7 @@ def register_scorer(name: str, scorer: Scorer, *, description: str = "", replace
 
 
 def get_scorer(name: str) -> Scorer:
-    return _registry.get(name)
+    return cast(Scorer, _registry.get(name))
 
 
 def list_scorers() -> list[str]:
@@ -24,7 +25,8 @@ def list_scorers() -> list[str]:
 
 
 def _expected(item: dict[str, Any]) -> str:
-    return str(item.get("expected", item.get("answer", "")))
+    expected = item.get("expected", item.get("answer", ""))
+    return "" if expected is None else str(expected)
 
 
 def _exact_match(text: str, item: dict[str, Any]) -> float:
@@ -43,6 +45,8 @@ def _regex(text: str, item: dict[str, Any]) -> float:
 
 def _numeric_match(text: str, item: dict[str, Any]) -> float:
     expected_raw = item.get("expected", item.get("answer"))
+    if expected_raw is None:
+        return 0.0
     try:
         expected = float(expected_raw)
     except (TypeError, ValueError):

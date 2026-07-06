@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from dataclasses import replace
 from typing import Any
@@ -154,13 +155,13 @@ class RaySession:
             options["scheduling_strategy"] = strategy
         actor = TrainerActor.options(**options).remote(
             session_id=session_id,
-                model_config=model_config,
-                lora_config=lora_config,
-                checkpoint_root=self.config.checkpoint_root,
-                speed_config=self.config.speed,
-                model_path=model_path,
-                with_optimizer=with_optimizer,
-                metadata=metadata or {},
+            model_config=model_config,
+            lora_config=lora_config,
+            checkpoint_root=self.config.checkpoint_root,
+            speed_config=self.config.speed,
+            model_path=model_path,
+            with_optimizer=with_optimizer,
+            metadata=metadata or {},
         )
         self.training_actors[session_id] = actor
         if not hasattr(self, "_owned_actors"):
@@ -281,10 +282,8 @@ class RaySession:
             from ray.util.placement_group import remove_placement_group
 
             for group in list(getattr(self, "_placement_groups", {}).values()):
-                try:
+                with contextlib.suppress(Exception):
                     remove_placement_group(group)
-                except Exception:
-                    pass
         except Exception:
             pass
         if hasattr(self, "training_actors"):

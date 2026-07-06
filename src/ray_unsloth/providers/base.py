@@ -125,7 +125,7 @@ class LaunchPlan:
     summary: str
     steps: list[str] = field(default_factory=list)
     artifacts: dict[str, str] = field(default_factory=dict)  # filename -> content
-    fit: "GpuFitReport | None" = None
+    fit: GpuFitReport | None = None
     estimated_hourly_cost_usd: float | None = None
 
     def render(self) -> str:
@@ -192,8 +192,7 @@ class GpuFitReport:
     def render(self) -> str:
         if self.estimated_required_gb is None:
             return (
-                f"GPU fit: could not estimate memory for '{self.model}' "
-                "(no parameter-count token in the model name)."
+                f"GPU fit: could not estimate memory for '{self.model}' (no parameter-count token in the model name)."
             )
         verdict = "fits" if self.fits else "DOES NOT FIT"
         lines = [
@@ -208,8 +207,8 @@ class GpuFitReport:
 
 
 def estimate_gpu_fit(
-    model_config: "ModelConfig",
-    lora_config: "LoRAConfig",
+    model_config: ModelConfig,
+    lora_config: LoRAConfig,
     *,
     gpu: str,
 ) -> GpuFitReport:
@@ -220,7 +219,7 @@ def estimate_gpu_fit(
     scaled by sequence length, and a fixed CUDA/runtime floor. Deliberately
     conservative and clearly labeled as an estimate.
     """
-    catalog = GPU_CATALOG.get(gpu, GPU_CATALOG.get(gpu.upper(), None))
+    catalog = GPU_CATALOG.get(gpu, GPU_CATALOG.get(gpu.upper()))
     memory_gb = catalog["memory_gb"] if catalog else 0.0
     params_b = parse_param_count(model_config.base_model)
     if params_b is None:
@@ -278,19 +277,19 @@ class RuntimeProvider(ABC):
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities: ...
 
-    def validate(self, config: "RuntimeConfig") -> list[ValidationIssue]:
+    def validate(self, config: RuntimeConfig) -> list[ValidationIssue]:
         """Provider-specific config validation. Default: no issues."""
         del config
         return []
 
     @abstractmethod
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan: ...
+    def plan(self, config: RuntimeConfig) -> LaunchPlan: ...
 
     @abstractmethod
-    def connect(self, config: "RuntimeConfig") -> SessionProtocol:
+    def connect(self, config: RuntimeConfig) -> SessionProtocol:
         """Create a live session. Planned providers raise ProviderNotAvailableError."""
 
-    def health(self, config: "RuntimeConfig") -> HealthStatus:
+    def health(self, config: RuntimeConfig) -> HealthStatus:
         """Environment readiness without side effects. Default: dependency checks."""
         del config
         capabilities = self.capabilities()
@@ -304,7 +303,7 @@ class RuntimeProvider(ABC):
         detail = "ready" if ok else f"missing: {', '.join(missing)}"
         return HealthStatus(ok=ok, detail=detail, checks=checks)
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> None:  # noqa: B027 — optional hook, intentionally a no-op default
         """Release any provider-level resources. Sessions are closed separately."""
 
     # Convenience shared by planned providers.

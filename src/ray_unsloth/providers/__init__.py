@@ -32,11 +32,11 @@ __all__ = [
     "SessionProtocol",
     "ValidationIssue",
     "estimate_gpu_fit",
-    "parse_param_count",
     "get_provider",
-    "resolve_provider_name",
-    "resolve_provider",
     "list_providers",
+    "parse_param_count",
+    "resolve_provider",
+    "resolve_provider_name",
 ]
 
 # Built-ins register lazily: nothing (Ray, Modal, torch) is imported until a
@@ -64,14 +64,11 @@ def get_provider(name: str) -> RuntimeProvider:
         raise ProviderError(str(exc)) from None
     provider = provider_cls() if isinstance(provider_cls, type) else provider_cls
     if not isinstance(provider, RuntimeProvider):
-        raise ProviderError(
-            f"Registered provider '{name}' is not a RuntimeProvider "
-            f"(got {type(provider).__name__})."
-        )
+        raise ProviderError(f"Registered provider '{name}' is not a RuntimeProvider (got {type(provider).__name__}).")
     return provider
 
 
-def resolve_provider_name(config: "RuntimeConfig") -> str:
+def resolve_provider_name(config: RuntimeConfig) -> str:
     """The provider a config selects, honoring the legacy ``modal.enabled`` switch."""
     if config.provider:
         return config.provider
@@ -80,7 +77,7 @@ def resolve_provider_name(config: "RuntimeConfig") -> str:
     return "local-ray"
 
 
-def resolve_provider(config: "RuntimeConfig") -> RuntimeProvider:
+def resolve_provider(config: RuntimeConfig) -> RuntimeProvider:
     return get_provider(resolve_provider_name(config))
 
 

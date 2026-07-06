@@ -33,13 +33,13 @@ if TYPE_CHECKING:
 _DOCS = "https://arjungoray.github.io/ray-unsloth/guides/providers"
 
 
-def _gpu_for(config: "RuntimeConfig") -> str:
-    return (config.provider_options or {}).get("gpu", config.modal.gpu or "L4")
+def _gpu_for(config: RuntimeConfig) -> str:
+    return str((config.provider_options or {}).get("gpu", config.modal.gpu or "L4"))
 
 
 def _attach_steps(head_address: str) -> list[str]:
     return [
-        f"Attach ray-unsloth: set `ray.address: \"{head_address}\"` and `provider: local-ray` in your config",
+        f'Attach ray-unsloth: set `ray.address: "{head_address}"` and `provider: local-ray` in your config',
         "Run your training loop as usual — actors schedule onto the remote cluster",
     ]
 
@@ -47,7 +47,7 @@ def _attach_steps(head_address: str) -> list[str]:
 class _PlannedProvider(RuntimeProvider):
     kind = "planned"
 
-    def connect(self, config: "RuntimeConfig") -> SessionProtocol:
+    def connect(self, config: RuntimeConfig) -> SessionProtocol:
         del config
         raise self._not_available(
             reason="automated provisioning for this provider is on the roadmap",
@@ -74,7 +74,7 @@ class KubeRayProvider(_PlannedProvider):
             docs_url=_DOCS,
         )
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         options = config.provider_options or {}
         gpu = _gpu_for(config)
         namespace = options.get("namespace", "default")
@@ -144,7 +144,7 @@ class SkyPilotProvider(_PlannedProvider):
             docs_url=_DOCS,
         )
 
-    def validate(self, config: "RuntimeConfig") -> list[ValidationIssue]:
+    def validate(self, config: RuntimeConfig) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         options = config.provider_options or {}
         if "gpu" not in options and not config.modal.gpu:
@@ -158,7 +158,7 @@ class SkyPilotProvider(_PlannedProvider):
             )
         return issues
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         options = config.provider_options or {}
         gpu = _gpu_for(config)
         sky_gpu = gpu.replace("-40GB", ":40GB").replace("-80GB", ":80GB").split(":")[0]
@@ -209,7 +209,7 @@ class SlurmProvider(_PlannedProvider):
             docs_url=_DOCS,
         )
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         options = config.provider_options or {}
         gpu = _gpu_for(config)
         partition = options.get("partition", "gpu")
@@ -260,7 +260,7 @@ class RunPodProvider(_PlannedProvider):
             docs_url=_DOCS,
         )
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         gpu = _gpu_for(config)
         fit = estimate_gpu_fit(config.model, config.lora, gpu=gpu)
         bootstrap = """#!/bin/bash

@@ -26,9 +26,7 @@ FLASH_ATTN_WHEEL_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releas
 FLASH_LINEAR_ATTENTION_PACKAGE = "flash-linear-attention==0.5.0"
 CAUSAL_CONV1D_VERSION = "1.6.1"
 CAUSAL_CONV1D_TAG = "v1.6.1.post4"
-CAUSAL_CONV1D_WHEEL_BASE_URL = (
-    "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4"
-)
+CAUSAL_CONV1D_WHEEL_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4"
 
 
 def _sync_modal_volume(init_kwargs: dict[str, Any], method_name: str) -> None:
@@ -386,7 +384,9 @@ def _build_download_app(*, modal, app_name: str, volume_name: str, mount_path: s
     return app, fn
 
 
-def _ensure_download_endpoint(*, modal, app_name: str, volume_name: str, mount_path: str, timeout: int, python_version: str):
+def _ensure_download_endpoint(
+    *, modal, app_name: str, volume_name: str, mount_path: str, timeout: int, python_version: str
+):
     """Look up an existing deployed download function, or deploy it.
 
     Why: deploys are idempotent but slow; if the function is already live
@@ -464,7 +464,7 @@ def _modal_actor_service_class(modal):
 
 
 class _ModalMethod:
-    def __init__(self, actor: "ModalActorHandle", method_name: str):
+    def __init__(self, actor: ModalActorHandle, method_name: str):
         self._actor = actor
         self._method_name = method_name
 
@@ -499,7 +499,7 @@ class ModalActorHandle:
     def __init__(
         self,
         *,
-        session: "ModalSession",
+        session: ModalSession,
         actor_kind: str,
         session_id: str,
         pool_id: str | None = None,
@@ -559,8 +559,7 @@ class ModalSession:
             import modal
         except ImportError as exc:
             raise RuntimeError(
-                "Modal is required when modal.enabled is true. Install with "
-                "`pip install -e '.[modal]'`."
+                "Modal is required when modal.enabled is true. Install with `pip install -e '.[modal]'`."
             ) from exc
 
         modal_config = self.config.modal
@@ -579,11 +578,7 @@ class ModalSession:
             image = image.uv_pip_install(*flash_attention_packages)
         if linear_attention_packages:
             image = image.uv_pip_install(*linear_attention_packages)
-        image = (
-            image
-            .uv_pip_install(*packages)
-            .env({"HF_HOME": "/model_cache", "PYTHONPATH": "/root/ray_unsloth_src"})
-        )
+        image = image.uv_pip_install(*packages).env({"HF_HOME": "/model_cache", "PYTHONPATH": "/root/ray_unsloth_src"})
         source_root = Path(__file__).resolve().parents[3]
         package_dir = source_root / "ray_unsloth"
         if hasattr(image, "add_local_dir"):

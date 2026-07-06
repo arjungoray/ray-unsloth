@@ -8,9 +8,10 @@ local adapter glue.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from math import prod
-from typing import Any, Awaitable, Callable, Generic, Iterable, Literal, Mapping, Sequence, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 T = TypeVar("T")
 
@@ -305,11 +306,11 @@ class ModelInput:
         self.chunks = list(chunks)
 
     @classmethod
-    def from_ints(cls, tokens: Iterable[int]) -> "ModelInput":
+    def from_ints(cls, tokens: Iterable[int]) -> ModelInput:
         return cls(chunks=[EncodedTextChunk(tokens=list(tokens))])
 
     @classmethod
-    def empty(cls) -> "ModelInput":
+    def empty(cls) -> ModelInput:
         return cls(chunks=[])
 
     def to_ints(self) -> list[int]:
@@ -328,16 +329,16 @@ class ModelInput:
     def length(self) -> int:
         return sum(chunk.length for chunk in self.chunks)
 
-    def append(self, chunk: "ModelInput | ModelInputChunk | Iterable[int] | int") -> "ModelInput":
+    def append(self, chunk: ModelInput | ModelInputChunk | Iterable[int] | int) -> ModelInput:
         if isinstance(chunk, ModelInput):
             return ModelInput(chunks=self.chunks + chunk.chunks)
         if isinstance(chunk, (EncodedTextChunk, ImageChunk, ImageAssetPointerChunk)):
-            return ModelInput(chunks=self.chunks + [chunk])
+            return ModelInput(chunks=[*self.chunks, chunk])
         if isinstance(chunk, int):
             return self.append_int(chunk)
-        return ModelInput(chunks=self.chunks + [EncodedTextChunk(tokens=list(chunk))])
+        return ModelInput(chunks=[*self.chunks, EncodedTextChunk(tokens=list(chunk))])
 
-    def append_int(self, token: int) -> "ModelInput":
+    def append_int(self, token: int) -> ModelInput:
         return self.append(EncodedTextChunk(tokens=[token]))
 
 
@@ -358,7 +359,7 @@ class TensorData:
         self.dtype = _tensor_dtype_name(self.dtype)
 
     @classmethod
-    def from_numpy(cls, array: Any) -> "TensorData":
+    def from_numpy(cls, array: Any) -> TensorData:
         return cls(
             data=array.flatten().tolist() if hasattr(array, "flatten") else _flatten_nested(array),
             dtype=_tensor_dtype_name(getattr(array, "dtype", "float32")),
@@ -366,7 +367,7 @@ class TensorData:
         )
 
     @classmethod
-    def from_torch(cls, tensor: Any) -> "TensorData":
+    def from_torch(cls, tensor: Any) -> TensorData:
         return cls(
             data=tensor.detach().cpu().flatten().tolist(),
             dtype=_tensor_dtype_name(tensor.dtype),
@@ -374,7 +375,7 @@ class TensorData:
         )
 
     @classmethod
-    def from_torch_sparse(cls, tensor: Any) -> "TensorData":
+    def from_torch_sparse(cls, tensor: Any) -> TensorData:
         return cls.from_torch(tensor)
 
     def to_numpy(self):
@@ -506,7 +507,9 @@ class GeneratedSequence:
     ) -> None:
         self.tokens_np = tokens_np
         self.logprobs_np = logprobs_np
-        self._tokens_list = list(tokens) if tokens is not None else (list(_tokens_list) if _tokens_list is not None else None)
+        self._tokens_list = (
+            list(tokens) if tokens is not None else (list(_tokens_list) if _tokens_list is not None else None)
+        )
         self._logprobs_list = (
             list(logprobs) if logprobs is not None else (list(_logprobs_list) if _logprobs_list is not None else None)
         )
@@ -547,14 +550,14 @@ class SampleResponse:
     prompt_logprobs_np: Any | None = None
     topk_prompt_logprobs_np: Any | None = None
 
-    def result(self, timeout: float | None = None) -> "SampleResponse":
+    def result(self, timeout: float | None = None) -> SampleResponse:
         del timeout
         return self
 
-    async def result_async(self, timeout: float | None = None) -> "SampleResponse":
+    async def result_async(self, timeout: float | None = None) -> SampleResponse:
         return self.result(timeout=timeout)
 
-    def get(self, timeout: float | None = None) -> "SampleResponse":
+    def get(self, timeout: float | None = None) -> SampleResponse:
         return self.result(timeout=timeout)
 
 

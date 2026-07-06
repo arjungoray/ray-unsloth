@@ -50,7 +50,6 @@ from ray_unsloth import (
 )
 from ray_unsloth.download import modal_volume_get_command
 
-
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="Calling super")
 
@@ -483,7 +482,7 @@ async def collect_rollouts(
     prompts = [build_generation_prompt(tokenizer, problem, enable_thinking=enable_thinking) for problem in problems]
 
     rollouts = []
-    for problem, prompt in zip(problems, prompts):
+    for problem, prompt in zip(problems, prompts, strict=False):
         rewards = []
         raw_sequences = []
         for _sample_index in range(group_size):
@@ -542,7 +541,7 @@ async def collect_rollouts(
                 reward=reward,
                 advantage=advantage,
             )
-            for (sequence, text, reward), advantage in zip(raw_sequences, advantages)
+            for (sequence, text, reward), advantage in zip(raw_sequences, advantages, strict=False)
         ]
         rollouts.append(
             ProblemRollout(
@@ -816,7 +815,9 @@ async def train(args: argparse.Namespace) -> None:
                 step_start=t0,
                 token_totals=token_totals,
             )
-            datums = [datum for rollout in rollouts for datum in rollout_to_datums(rollout, max_train_tokens=max_train_tokens)]
+            datums = [
+                datum for rollout in rollouts for datum in rollout_to_datums(rollout, max_train_tokens=max_train_tokens)
+            ]
             expert_datums = [
                 build_supervised_datum(
                     tokenizer=tokenizer,
@@ -835,9 +836,9 @@ async def train(args: argparse.Namespace) -> None:
                 step=step,
                 step_start=t0,
                 extra={
-                    "reward/pre_retry_mean": _helpers.scalar_summary(
-                        [float(row["reward"]) for row in initial_rows]
-                    )["mean"],
+                    "reward/pre_retry_mean": _helpers.scalar_summary([float(row["reward"]) for row in initial_rows])[
+                        "mean"
+                    ],
                     "rollout/pre_retry_degenerate_fraction": (
                         sum(1 for rollout in rollouts if rollout.degenerate) / len(rollouts) if rollouts else 0.0
                     ),

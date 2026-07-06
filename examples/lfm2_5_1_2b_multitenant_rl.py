@@ -30,7 +30,6 @@ from ray_unsloth import AdamParams, SamplingParams, ServiceClient
 from ray_unsloth.clients._remote import resolve
 from ray_unsloth.download import modal_volume_get_command
 
-
 _RL_PATH = Path(__file__).with_name("qwen3_5_9b_rl_training.py")
 _RL_SPEC = importlib.util.spec_from_file_location("qwen3_5_9b_rl_training_recipe", _RL_PATH)
 if _RL_SPEC is None or _RL_SPEC.loader is None:
@@ -91,7 +90,7 @@ class WandbRunLogger:
         run_config: dict[str, Any],
         group: str,
         job_type: str,
-    ) -> "WandbRunLogger":
+    ) -> WandbRunLogger:
         wandb_settings = dict(settings.get("wandb", {}))
         enabled = bool(wandb_settings.get("enabled", True))
         if not enabled:
@@ -173,7 +172,9 @@ def tenant_specs() -> list[TenantSpec]:
             problems=[
                 rl.MathProblem("Compute 37 * 24 - 156.", "732"),
                 rl.MathProblem("Compute 125% of 64, then subtract 17.", "63"),
-                rl.MathProblem("The average of 6 numbers is 18. Five numbers are 11, 14, 20, 21, and 25. What is the sixth?", "17"),
+                rl.MathProblem(
+                    "The average of 6 numbers is 18. Five numbers are 11, 14, 20, 21, and 25. What is the sixth?", "17"
+                ),
                 rl.MathProblem("Solve for x: 5x - 7 = 3x + 29.", "18"),
             ],
         ),
@@ -181,10 +182,18 @@ def tenant_specs() -> list[TenantSpec]:
             name="word-problem-rl-tenant",
             seed=302,
             problems=[
-                rl.MathProblem("A sequence starts at 7. Each next term is double the previous term minus 3. What is the 5th term?", "67"),
+                rl.MathProblem(
+                    "A sequence starts at 7. Each next term is double the previous term minus 3. What is the 5th term?",
+                    "67",
+                ),
                 rl.MathProblem("What is the remainder when 17^3 is divided by 19?", "11"),
-                rl.MathProblem("A rectangle has perimeter 90. Its length is 3 more than twice its width. What is its area?", "434"),
-                rl.MathProblem("A jar has red and blue marbles in a 3:5 ratio. After adding 8 red marbles, the ratio is 5:7. What was the initial total number of marbles?", "112"),
+                rl.MathProblem(
+                    "A rectangle has perimeter 90. Its length is 3 more than twice its width. What is its area?", "434"
+                ),
+                rl.MathProblem(
+                    "A jar has red and blue marbles in a 3:5 ratio. After adding 8 red marbles, the ratio is 5:7. What was the initial total number of marbles?",
+                    "112",
+                ),
             ],
         ),
         TenantSpec(

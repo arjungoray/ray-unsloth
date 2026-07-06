@@ -27,7 +27,6 @@ import yaml
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient, TensorData
 from ray_unsloth.download import modal_volume_get_command
 
-
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="Calling super")
 
@@ -234,7 +233,7 @@ def strip_trailing_eos(tokens: list[int], tokenizer: Any) -> list[int]:
 
 def common_prefix_length(left: Sequence[int], right: Sequence[int]) -> int:
     count = 0
-    for left_token, right_token in zip(left, right):
+    for left_token, right_token in zip(left, right, strict=False):
         if left_token != right_token:
             break
         count += 1
@@ -287,10 +286,7 @@ def conversation_to_datum(
     model_tokens = full_tokens[:-1]
     next_tokens = full_tokens[1:]
     first_assistant_target_index = max(len(prompt_tokens) - 1, 0)
-    weights = [
-        1.0 if index >= first_assistant_target_index else 0.0
-        for index in range(len(next_tokens))
-    ]
+    weights = [1.0 if index >= first_assistant_target_index else 0.0 for index in range(len(next_tokens))]
 
     return Datum(
         model_input=ModelInput.from_ints(model_tokens),
@@ -328,10 +324,10 @@ def decode_tokens(tokenizer: Any, tokens: list[int]) -> str:
 def weighted_mean_nll(training_data: list[Datum], loss_fn_outputs: list[dict[str, TensorData]]) -> float:
     weighted_logprob_sum = 0.0
     total_weight = 0.0
-    for datum, output in zip(training_data, loss_fn_outputs):
+    for datum, output in zip(training_data, loss_fn_outputs, strict=False):
         logprobs = output["logprobs"].tolist()
         weights = datum.loss_fn_inputs["weights"].tolist()
-        for logprob, weight in zip(logprobs, weights):
+        for logprob, weight in zip(logprobs, weights, strict=False):
             weighted_logprob_sum += float(logprob) * float(weight)
             total_weight += float(weight)
     if total_weight == 0.0:
@@ -355,10 +351,7 @@ async def train(args: argparse.Namespace) -> None:
     )
     tokenizer = training_client.get_tokenizer()
 
-    training_data = [
-        conversation_to_datum(conv, tokenizer, max_length=max_length)
-        for conv in conversations
-    ]
+    training_data = [conversation_to_datum(conv, tokenizer, max_length=max_length) for conv in conversations]
 
     print(f"Built {len(training_data)} training examples")
 

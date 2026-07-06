@@ -116,10 +116,7 @@ def create_app(config: RuntimeConfig | str | dict[str, Any] | None = None):
     def exporters():
         from ray_unsloth.plugins import exporters as exporter_registry
 
-        return [
-            {"name": name, "description": exporter_registry.describe(name)}
-            for name in exporter_registry.names()
-        ]
+        return [{"name": name, "description": exporter_registry.describe(name)} for name in exporter_registry.names()]
 
     @app.get("/api/topology")
     def topology():
@@ -135,7 +132,9 @@ def create_app(config: RuntimeConfig | str | dict[str, Any] | None = None):
     return app
 
 
-def serve(config: RuntimeConfig | str | dict[str, Any] | None = None, *, host: str = "127.0.0.1", port: int = 8765) -> None:
+def serve(
+    config: RuntimeConfig | str | dict[str, Any] | None = None, *, host: str = "127.0.0.1", port: int = 8765
+) -> None:
     try:
         import uvicorn
     except ImportError as exc:  # pragma: no cover - depends on optional extra

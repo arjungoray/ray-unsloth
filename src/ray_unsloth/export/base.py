@@ -7,7 +7,7 @@ import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from ray_unsloth.checkpoints import MANIFEST_NAME, read_manifest, resolve_path
 from ray_unsloth.errors import ExportError
@@ -47,7 +47,7 @@ def export_checkpoint(target: str, checkpoint_path: str, output: str | None = No
         exporter = _registry.get(target)
     except Exception as exc:
         raise ExportError(f"Unknown export target '{target}'. Available: {', '.join(_registry.names())}.") from exc
-    return exporter.export(checkpoint_path, output=output, **options)
+    return cast(ExportReport, exporter.export(checkpoint_path, output=output, **options))
 
 
 class LocalDirExporter:
@@ -63,18 +63,19 @@ class LocalDirExporter:
             shutil.rmtree(output_path)
         shutil.copytree(source, output_path)
         manifest = read_manifest(output_path)
+        created_at = time.time()
         export_manifest = {
             "export_target": self.name,
             "source_path": str(source),
             "checkpoint_manifest": manifest,
-            "created_at": time.time(),
+            "created_at": created_at,
         }
         (output_path / "export.json").write_text(json.dumps(export_manifest, indent=2, sort_keys=True))
         return ExportReport(
             target=self.name,
             source_path=str(source),
             output_path=str(output_path),
-            created_at=export_manifest["created_at"],
+            created_at=created_at,
             artifacts=[MANIFEST_NAME, "export.json"],
             notes=["Copied checkpoint artifacts without merging weights."],
         )
@@ -97,7 +98,7 @@ class HuggingFaceExporter(LocalDirExporter):
                     "- lora",
                     "---",
                     "",
-                    f"# ray-unsloth checkpoint export",
+                    "# ray-unsloth checkpoint export",
                     "",
                     f"Base model: `{manifest.get('base_model', 'unknown')}`",
                     "",
@@ -135,7 +136,7 @@ class StubExporter:
             target=self.name,
             source_path=str(source),
             output_path=str(output_path),
-            created_at=payload["created_at"],
+            created_at=float(cast(float, payload["created_at"])),
             artifacts=["export-plan.json"],
             notes=self.instructions,
         )
@@ -209,7 +210,7 @@ class GGUFExporter:
                 target=self.name,
                 source_path=str(source),
                 output_path=str(output_path),
-                created_at=payload["created_at"],
+                created_at=float(cast(float, payload["created_at"])),
                 artifacts=["export-plan.json"],
                 notes=[
                     "llama.cpp checkout not found — wrote the conversion plan instead.",
@@ -220,8 +221,7 @@ class GGUFExporter:
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
             raise ExportError(
-                f"convert_lora_to_gguf.py failed (exit {result.returncode}):\n"
-                f"{result.stderr.strip()[-2000:]}"
+                f"convert_lora_to_gguf.py failed (exit {result.returncode}):\n{result.stderr.strip()[-2000:]}"
             )
         return ExportReport(
             target=self.name,
@@ -267,8 +267,7 @@ class OllamaExporter:
         artifacts = [*gguf_report.artifacts, "Modelfile"]
         ollama_bin = _shutil.which("ollama")
         if ollama_bin is None:
-            notes.append("ollama CLI not found — install it and run: ollama create "
-                         f"{model_name} -f {modelfile}")
+            notes.append(f"ollama CLI not found — install it and run: ollama create {model_name} -f {modelfile}")
         elif options.get("create"):
             result = subprocess.run(
                 [ollama_bin, "create", model_name, "-f", str(modelfile)],
@@ -294,9 +293,21 @@ for _name, _exporter, _description in (
     ("local", LocalDirExporter(), "Copy checkpoint artifacts into a local export folder."),
     ("hf", HuggingFaceExporter(), "Prepare a local Hugging Face-style LoRA adapter folder."),
     ("gguf", GGUFExporter(), "Convert the LoRA adapter to GGUF via llama.cpp (plan artifact if tooling missing)."),
-    ("ollama", OllamaExporter(), "GGUF-convert the adapter and write an Ollama Modelfile (ollama create with create=True)."),
-    ("vllm", StubExporter("vllm", ["Serve the base model with the exported LoRA adapter via vLLM --enable-lora."]), "Render vLLM serving plan."),
-    ("sglang", StubExporter("sglang", ["Serve the base model and LoRA adapter with SGLang's LoRA support."]), "Render SGLang serving plan."),
+    (
+        "ollama",
+        OllamaExporter(),
+        "GGUF-convert the adapter and write an Ollama Modelfile (ollama create with create=True).",
+    ),
+    (
+        "vllm",
+        StubExporter("vllm", ["Serve the base model with the exported LoRA adapter via vLLM --enable-lora."]),
+        "Render vLLM serving plan.",
+    ),
+    (
+        "sglang",
+        StubExporter("sglang", ["Serve the base model and LoRA adapter with SGLang's LoRA support."]),
+        "Render SGLang serving plan.",
+    ),
 ):
     if _name not in _registry:
         register_exporter(_name, _exporter, description=_description)

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 from ray_unsloth.checkpoints import read_manifest, resolve_path
@@ -48,7 +47,7 @@ class MetadataCardExporter:
             target=self.name,
             source_path=str(source),
             output_path=str(out),
-            created_at=payload["created_at"],
+            created_at=float(payload["created_at"]),
             artifacts=["metadata-card.json"],
             notes=["Example plugin exporter wrote checkpoint metadata."],
         )

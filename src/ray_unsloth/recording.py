@@ -11,8 +11,10 @@ breaks a training step.
 
 from __future__ import annotations
 
+import contextlib
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from ray_unsloth.store import RunStore
 
@@ -30,10 +32,8 @@ class RecordingFuture:
         with self._lock:
             if not self._recorded:
                 self._recorded = True
-                try:
+                with contextlib.suppress(Exception):
                     self._callback(value)
-                except Exception:
-                    pass
         return value
 
     def result(self, timeout: float | None = None) -> Any:
@@ -51,8 +51,8 @@ class RecordingFuture:
             return self._record(getter(timeout))
         return self.result(timeout)
 
-    def __await__(self):
-        async def _await_inner():
+    def __await__(self) -> Any:
+        async def _await_inner() -> Any:
             awaitable = getattr(self._inner, "__await__", None)
             if not callable(awaitable):
                 return self.result()

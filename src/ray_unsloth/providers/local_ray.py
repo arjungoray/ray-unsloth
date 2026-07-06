@@ -35,7 +35,7 @@ class LocalRayProvider(RuntimeProvider):
             docs_url="https://arjungoray.github.io/ray-unsloth/guides/runtimes",
         )
 
-    def validate(self, config: "RuntimeConfig") -> list[ValidationIssue]:
+    def validate(self, config: RuntimeConfig) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         if config.modal.enabled:
             issues.append(
@@ -66,7 +66,7 @@ class LocalRayProvider(RuntimeProvider):
             )
         return issues
 
-    def plan(self, config: "RuntimeConfig") -> LaunchPlan:
+    def plan(self, config: RuntimeConfig) -> LaunchPlan:
         resources = config.resources
         gpu_hint = "local GPU"
         fit = None
@@ -102,7 +102,7 @@ class LocalRayProvider(RuntimeProvider):
             fit=fit,
         )
 
-    def connect(self, config: "RuntimeConfig") -> SessionProtocol:
+    def connect(self, config: RuntimeConfig) -> SessionProtocol:
         from ray_unsloth.runtime.ray import RaySession
 
         return RaySession(config)

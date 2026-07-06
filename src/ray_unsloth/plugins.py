@@ -21,8 +21,9 @@ Third-party packages can contribute plugins two ways:
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, Callable, Generic, Iterator, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 from ray_unsloth.errors import PluginError
 
@@ -41,22 +42,19 @@ class _LazyRef:
         module_name, _, attr = self.target.partition(":")
         if not module_name or not attr:
             raise PluginError(
-                f"Invalid lazy plugin reference '{self.target}'. "
-                "Expected the form 'package.module:attribute'."
+                f"Invalid lazy plugin reference '{self.target}'. Expected the form 'package.module:attribute'."
             )
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
             raise PluginError(
-                f"Could not import module '{module_name}' for plugin reference "
-                f"'{self.target}': {exc}"
+                f"Could not import module '{module_name}' for plugin reference '{self.target}': {exc}"
             ) from exc
         try:
             return getattr(module, attr)
         except AttributeError as exc:
             raise PluginError(
-                f"Module '{module_name}' has no attribute '{attr}' "
-                f"(from plugin reference '{self.target}')."
+                f"Module '{module_name}' has no attribute '{attr}' (from plugin reference '{self.target}')."
             ) from exc
 
 
@@ -73,14 +71,15 @@ class Registry(Generic[T]):
     _entries: dict[str, Any] = field(default_factory=dict)
     _descriptions: dict[str, str] = field(default_factory=dict)
 
-    def register(self, name: str, value: T | None = None, *, description: str = "", replace: bool = False):
+    def register(
+        self, name: str, value: T | None = None, *, description: str = "", replace: bool = False
+    ) -> Callable[[T], T] | T:
         """Register ``value`` under ``name``. Usable as a decorator when ``value`` is omitted."""
 
-        def _add(item):
+        def _add(item: T) -> T:
             if not replace and name in self._entries:
                 raise PluginError(
-                    f"A {self.kind} named '{name}' is already registered. "
-                    "Pass replace=True to override it."
+                    f"A {self.kind} named '{name}' is already registered. Pass replace=True to override it."
                 )
             self._entries[name] = item
             if description:
@@ -100,13 +99,12 @@ class Registry(Generic[T]):
             entry = self._entries[name]
         except KeyError:
             raise PluginError(
-                f"Unknown {self.kind} '{name}'. "
-                f"Available: {', '.join(sorted(self._entries)) or 'none registered'}."
+                f"Unknown {self.kind} '{name}'. Available: {', '.join(sorted(self._entries)) or 'none registered'}."
             ) from None
         if isinstance(entry, _LazyRef):
             entry = entry.resolve()
             self._entries[name] = entry
-        return entry
+        return cast(T, entry)
 
     def unregister(self, name: str) -> None:
         self._entries.pop(name, None)
@@ -157,8 +155,7 @@ def load_entry_point_plugins(*, force: bool = False) -> list[str]:
             loaded.append(entry_point.name)
         except Exception as exc:
             raise PluginError(
-                f"Plugin entry point '{entry_point.name}' "
-                f"({entry_point.value}) failed to load: {exc}"
+                f"Plugin entry point '{entry_point.name}' ({entry_point.value}) failed to load: {exc}"
             ) from exc
     _entry_points_loaded = True
     return loaded

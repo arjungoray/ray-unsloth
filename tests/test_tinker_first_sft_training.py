@@ -6,7 +6,6 @@ import yaml
 
 from ray_unsloth import TensorData
 
-
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "tinker_first_sft_training.py"
 SPEC = importlib.util.spec_from_file_location("tinker_first_sft_training", EXAMPLE_PATH)
 assert SPEC is not None
@@ -41,7 +40,7 @@ class LongPromptTokenizer:
         prompt = list(range(100))
         if add_generation_prompt:
             return prompt
-        return prompt + [200, 201]
+        return [*prompt, 200, 201]
 
     def __call__(self, text, add_special_tokens=False):
         del add_special_tokens
@@ -95,8 +94,8 @@ def test_conversation_to_datum_preserves_assistant_tokens_when_truncating():
         max_length=16,
     )
 
-    assert datum.model_input.to_ints() == list(range(86, 99)) + [200]
-    assert datum.loss_fn_inputs["target_tokens"].tolist() == list(range(87, 99)) + [200, 201]
+    assert datum.model_input.to_ints() == [*list(range(86, 99)), 200]
+    assert datum.loss_fn_inputs["target_tokens"].tolist() == [*list(range(87, 99)), 200, 201]
     assert datum.loss_fn_inputs["weights"].tolist() == [0.0] * 12 + [1.0, 1.0]
 
 

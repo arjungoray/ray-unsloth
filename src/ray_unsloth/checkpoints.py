@@ -59,8 +59,7 @@ def read_manifest(path: str | Path) -> dict[str, Any]:
         raise CheckpointError(f"Malformed checkpoint manifest at {manifest_path}: {exc}") from exc
     if not isinstance(manifest, dict):
         raise CheckpointError(
-            f"Malformed checkpoint manifest at {manifest_path}: expected a JSON object, "
-            f"got {type(manifest).__name__}."
+            f"Malformed checkpoint manifest at {manifest_path}: expected a JSON object, got {type(manifest).__name__}."
         )
     return manifest
 
@@ -147,8 +146,7 @@ def validate_restore_manifest(
 
     if not isinstance(manifest, dict):
         raise CheckpointError(
-            f"Malformed checkpoint manifest for '{path}': expected a JSON object, "
-            f"got {type(manifest).__name__}."
+            f"Malformed checkpoint manifest for '{path}': expected a JSON object, got {type(manifest).__name__}."
         )
 
     manifest_base_model = manifest.get("base_model")

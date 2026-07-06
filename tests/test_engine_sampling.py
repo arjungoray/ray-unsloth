@@ -60,7 +60,7 @@ class FakeGenerateModel:
     def generate(self, **kwargs):
         self.generate_kwargs = kwargs
         scores = []
-        for token in (11, 12):
+        for _token in (11, 12):
             score = torch.full((2, 100), -100.0)
             score[:, 77] = 0.0
             scores.append(score)
@@ -169,7 +169,7 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
 
     monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
 
-    engine = UnslothEngine(
+    UnslothEngine(
         session_id="train-1",
         model_config=ModelConfig(
             base_model="LiquidAI/LFM2.5-1.2B-Instruct",

@@ -20,6 +20,7 @@ See TESTING.md for full instructions.
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 import string
 from typing import Any
@@ -29,10 +30,8 @@ from ray_unsloth.checkpoints import read_manifest
 from ray_unsloth.config import load_config
 from ray_unsloth.download import modal_volume_get_command
 
-
 DEFAULT_PROMPT = (
-    "Complete this exact sentence with the project canary answer.\n"
-    "Sentence: The ray-unsloth smoke test answer is"
+    "Complete this exact sentence with the project canary answer.\nSentence: The ray-unsloth smoke test answer is"
 )
 DEFAULT_TARGET = " blue maple."
 
@@ -71,9 +70,7 @@ def assert_meaningful_generation(text: str, expected: str) -> None:
     if all(char in string.punctuation or char.isspace() for char in stripped):
         raise AssertionError(f"generation was only punctuation: {text!r}")
     if normalized_expected not in normalized_text:
-        raise AssertionError(
-            f"generation did not include expected canary {expected!r}; got {text!r}"
-        )
+        raise AssertionError(f"generation did not include expected canary {expected!r}; got {text!r}")
 
 
 def resolve_backend_config(config_path: str, backend: str) -> Any:
@@ -106,14 +103,12 @@ def assert_loss_decreases(losses: list[float], *, tolerance: float = 1e-3) -> No
     if not all(math.isfinite(value) for value in losses):
         raise AssertionError(f"loss curve contained a non-finite value: {losses!r}")
     if losses[-1] >= losses[0]:
-        raise AssertionError(
-            f"loss did not decrease while overfitting: first={losses[0]:.4f} final={losses[-1]:.4f}"
-        )
-    for previous, current in zip(losses, losses[1:]):
+        raise AssertionError(f"loss did not decrease while overfitting: first={losses[0]:.4f} final={losses[-1]:.4f}")
+    for previous, current in itertools.pairwise(losses):
         if current > previous + tolerance:
             raise AssertionError(
                 f"loss increased beyond tolerance {tolerance}: {previous:.4f} -> {current:.4f} "
-                f"(full curve {['%.4f' % value for value in losses]})"
+                f"(full curve {[f'{value:.4f}' for value in losses]})"
             )
 
 
@@ -156,8 +151,7 @@ def assert_sampling_features(response, prompt_input: ModelInput, max_tokens: int
         raise AssertionError("sample response did not include prompt_logprobs")
     if len(response.prompt_logprobs) != prompt_input.length:
         raise AssertionError(
-            f"prompt_logprobs length {len(response.prompt_logprobs)} did not match "
-            f"prompt length {prompt_input.length}"
+            f"prompt_logprobs length {len(response.prompt_logprobs)} did not match prompt length {prompt_input.length}"
         )
     if response.topk_prompt_logprobs is None:
         raise AssertionError("sample response did not include topk_prompt_logprobs")

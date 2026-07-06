@@ -8,6 +8,7 @@ on that volume rather than baked into the image.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import os
@@ -45,10 +46,8 @@ def load_or_create_secret(checkpoint_root: str | Path) -> bytes:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_bytes(secret)
     os.replace(tmp, path)
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(path, 0o600)
-    except OSError:
-        pass
     return secret
 
 
@@ -111,9 +110,7 @@ def archive_relpath(archive_path: str | Path, checkpoint_root: str | Path) -> st
 def modal_volume_get_command(volume_name: str, archive_relpath: str, output_path: str | Path | None = None) -> str:
     output = str(output_path) if output_path is not None else f"./{Path(archive_relpath).name}"
     return (
-        f"modal volume get {shlex.quote(volume_name)} \\\n"
-        f"  {shlex.quote(archive_relpath)} \\\n"
-        f"  {shlex.quote(output)}"
+        f"modal volume get {shlex.quote(volume_name)} \\\n  {shlex.quote(archive_relpath)} \\\n  {shlex.quote(output)}"
     )
 
 
