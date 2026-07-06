@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from dataclasses import replace
 from typing import Any
 
 from ray_unsloth.config import LoRAConfig, ModelConfig, RuntimeConfig
 from ray_unsloth.errors import RayUnavailableError
+from ray_unsloth.runtime._resolve import resolve_actor_configs
 from ray_unsloth.runtime.ray.distributed_trainer import (
     DistributedTrainerCoordinatorActor,
     DistributedTrainerWorkerActor,
@@ -296,7 +296,7 @@ class RaySession:
             self._placement_groups.clear()
 
     def _model_config(self, base_model: str | None) -> ModelConfig:
-        model_config, _lora_config = self.config.resolve_model_configs(base_model)
+        model_config, _lora_config = resolve_actor_configs(self.config, base_model=base_model)
         return model_config
 
     def _lora_config(
@@ -307,14 +307,11 @@ class RaySession:
         seed: int | None = None,
         target_modules: list[str] | None = None,
     ) -> LoRAConfig:
-        _model_config, lora_config = self.config.resolve_model_configs(base_model)
-        updates: dict[str, Any] = {}
-        if rank is not None:
-            updates["rank"] = rank
-        if seed is not None:
-            updates["random_state"] = seed
-        if target_modules is not None:
-            updates["target_modules"] = target_modules
-        if not updates:
-            return lora_config
-        return replace(lora_config, **updates)
+        _model_config, lora_config = resolve_actor_configs(
+            self.config,
+            base_model=base_model,
+            lora_rank=rank,
+            seed=seed,
+            target_modules=target_modules,
+        )
+        return lora_config

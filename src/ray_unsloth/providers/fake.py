@@ -39,6 +39,7 @@ from ray_unsloth.providers.base import (
     RuntimeProvider,
     SessionProtocol,
 )
+from ray_unsloth.runtime._resolve import resolve_actor_configs
 from ray_unsloth.types import (
     AdamParams,
     Datum,
@@ -633,15 +634,20 @@ class FakeSession:
         with_optimizer: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> tuple[str, Any]:
-        del target_modules
         session_id = f"train-{uuid.uuid4().hex}"
-        model_config, lora_config = self.config.resolve_model_configs(base_model)
+        model_config, lora_config = resolve_actor_configs(
+            self.config,
+            base_model=base_model,
+            lora_rank=lora_rank,
+            seed=seed,
+            target_modules=target_modules,
+        )
         actor = FakeTrainerActor(
             session_id=session_id,
             base_model=model_config.base_model,
-            lora_rank=lora_rank if lora_rank is not None else lora_config.rank,
+            lora_rank=lora_config.rank,
             checkpoint_root=self.config.checkpoint_root,
-            seed=seed if seed is not None else lora_config.random_state,
+            seed=lora_config.random_state,
             model_path=model_path,
             with_optimizer=with_optimizer,
             metadata=metadata,
@@ -657,7 +663,7 @@ class FakeSession:
         replicas: int | None = None,
     ) -> tuple[str, list[Any]]:
         session_id = f"sample-{uuid.uuid4().hex}"
-        model_config, lora_config = self.config.resolve_model_configs(base_model)
+        model_config, lora_config = resolve_actor_configs(self.config, base_model=base_model)
         count = replicas if replicas is not None else self.config.resources.sampler_replicas
         actors = [
             FakeSamplerActor(

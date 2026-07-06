@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ray_unsloth.clients._kwargs import warn_ignored
 from ray_unsloth.clients._remote import call, call_async, resolve
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.types import AdamParams, CustomLoss, Datum, FutureValueProxy, ModelInput
@@ -95,7 +96,12 @@ class TrainingClient:
         *,
         loss_type_input: str = "logprobs",
     ):
-        del loss_type_input
+        if loss_type_input != "logprobs":
+            warn_ignored(
+                {"loss_type_input": loss_type_input},
+                method="TrainingClient.forward_backward_custom",
+                accepted=("data", "loss_fn", "loss_fn_config"),
+            )
         return call(self._actor, "forward_backward_custom", data, loss_fn, loss_fn_config)
 
     def forward_backward_custom_async(
@@ -106,7 +112,12 @@ class TrainingClient:
         *,
         loss_type_input: str = "logprobs",
     ):
-        del loss_type_input
+        if loss_type_input != "logprobs":
+            warn_ignored(
+                {"loss_type_input": loss_type_input},
+                method="TrainingClient.forward_backward_custom_async",
+                accepted=("data", "loss_fn", "loss_fn_config"),
+            )
         return call_async(self._actor, "forward_backward_custom", data, loss_fn, loss_fn_config)
 
     def optim_step(self, adam_params: AdamParams):
@@ -116,12 +127,22 @@ class TrainingClient:
         return self._record_optim(call_async(self._actor, "optim_step", adam_params))
 
     def save_state(self, path: str | None = None, ttl_seconds: int | None = None, *, name: str | None = None):
-        del ttl_seconds
+        if ttl_seconds is not None:
+            warn_ignored(
+                {"ttl_seconds": ttl_seconds},
+                method="TrainingClient.save_state",
+                accepted=("path", "name"),
+            )
         path = path or name
         return self._record_save(call(self._actor, "save_state", path), kind="training_state")
 
     def save_state_async(self, path: str | None = None, ttl_seconds: int | None = None, *, name: str | None = None):
-        del ttl_seconds
+        if ttl_seconds is not None:
+            warn_ignored(
+                {"ttl_seconds": ttl_seconds},
+                method="TrainingClient.save_state_async",
+                accepted=("path", "name"),
+            )
         path = path or name
         return self._record_save(call_async(self._actor, "save_state", path), kind="training_state")
 
@@ -132,7 +153,12 @@ class TrainingClient:
         *,
         name: str | None = None,
     ):
-        del ttl_seconds
+        if ttl_seconds is not None:
+            warn_ignored(
+                {"ttl_seconds": ttl_seconds},
+                method="TrainingClient.save_state_with_optimizer",
+                accepted=("path", "name"),
+            )
         path = path or name
         return self._record_save(
             call(self._actor, "save_state_with_optimizer", path),
@@ -147,7 +173,12 @@ class TrainingClient:
         *,
         name: str | None = None,
     ):
-        del ttl_seconds
+        if ttl_seconds is not None:
+            warn_ignored(
+                {"ttl_seconds": ttl_seconds},
+                method="TrainingClient.save_state_with_optimizer_async",
+                accepted=("path", "name"),
+            )
         path = path or name
         return self._record_save(
             call_async(self._actor, "save_state_with_optimizer", path),
@@ -186,7 +217,12 @@ class TrainingClient:
         *,
         name: str | None = None,
     ):
-        del ttl_seconds
+        if ttl_seconds is not None:
+            warn_ignored(
+                {"ttl_seconds": ttl_seconds},
+                method="TrainingClient.save_weights_for_sampler",
+                accepted=("path", "name"),
+            )
         path = path or name
         return self._record_save(call(self._actor, "save_weights_for_sampler", path), kind="sampler")
 
@@ -197,7 +233,12 @@ class TrainingClient:
         *,
         name: str | None = None,
     ):
-        del ttl_seconds
+        if ttl_seconds is not None:
+            warn_ignored(
+                {"ttl_seconds": ttl_seconds},
+                method="TrainingClient.save_weights_for_sampler_async",
+                accepted=("path", "name"),
+            )
         path = path or name
         return self._record_save(call_async(self._actor, "save_weights_for_sampler", path), kind="sampler")
 
@@ -261,6 +302,12 @@ class TrainingClient:
         replicas: int | None = None,
     ) -> SamplingClient:
         if replicas in (None, 1):
+            if retry_config is not None:
+                warn_ignored(
+                    {"retry_config": retry_config},
+                    method="TrainingClient.save_weights_and_get_sampling_client",
+                    accepted=("path", "name", "replicas"),
+                )
             if path is not None or name is not None:
                 resolve(self.save_weights_for_sampler(path, name=name))
             return SamplingClient(session_id=f"{self.session_id}-sampler", actors=[self._actor])
@@ -280,6 +327,12 @@ class TrainingClient:
         replicas: int | None = None,
     ) -> SamplingClient:
         if replicas in (None, 1):
+            if retry_config is not None:
+                warn_ignored(
+                    {"retry_config": retry_config},
+                    method="TrainingClient.save_weights_and_get_sampling_client_async",
+                    accepted=("path", "name", "replicas"),
+                )
             if path is not None or name is not None:
                 await self.save_weights_for_sampler_async(path, name=name).result_async()
             return SamplingClient(session_id=f"{self.session_id}-sampler", actors=[self._actor])

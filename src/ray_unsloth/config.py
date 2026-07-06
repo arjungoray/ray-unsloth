@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ DEFAULT_LORA_TARGET_MODULES = [
 ATTN_LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_LORA_TARGET_MODULES = ["gate_proj", "up_proj", "down_proj"]
 UNEMBED_LORA_TARGET_MODULES = ["lm_head"]
+
+_WARNED_LEGACY_MODAL_SWITCH = False
 
 
 @dataclass(slots=True)
@@ -166,6 +169,14 @@ class RuntimeConfig:
 
     def __post_init__(self) -> None:
         self.distributed.validate()
+        global _WARNED_LEGACY_MODAL_SWITCH
+        if self.provider is None and self.modal.enabled and not _WARNED_LEGACY_MODAL_SWITCH:
+            warnings.warn(
+                "modal.enabled is deprecated; set provider: modal instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _WARNED_LEGACY_MODAL_SWITCH = True
         if self.provider is not None and self.modal.enabled and self.provider not in ("modal",):
             raise ValueError(
                 f"Conflicting runtime selection: provider is '{self.provider}' but modal.enabled is true. "

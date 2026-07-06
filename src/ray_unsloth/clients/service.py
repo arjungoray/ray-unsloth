@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ray_unsloth.checkpoints import read_manifest, validate_restore_manifest
+from ray_unsloth.clients._kwargs import warn_ignored
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.training import TrainingClient
 from ray_unsloth.config import RuntimeConfig, load_config, lora_target_modules_for_flags
@@ -26,7 +27,12 @@ class ServiceClient:
         config: str | RuntimeConfig | dict[str, Any] | None = None,
         base_url: str | None = None,
     ):
-        del base_url
+        if base_url is not None:
+            warn_ignored(
+                {"base_url": base_url},
+                method="ServiceClient.__init__",
+                accepted=("user_metadata", "project_id", "config"),
+            )
         if config is None and self._looks_like_config(user_metadata):
             config = user_metadata
             user_metadata = None
@@ -116,7 +122,6 @@ class ServiceClient:
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> TrainingClient:
-        del kwargs
         run_metadata = self._merged_metadata(metadata, user_metadata)
         target_modules = None
         if train_mlp is not None or train_attn is not None or train_unembed is not None:
@@ -125,6 +130,20 @@ class ServiceClient:
                 train_attn=True if train_attn is None else train_attn,
                 train_unembed=True if train_unembed is None else train_unembed,
             )
+        warn_ignored(
+            kwargs,
+            method="ServiceClient.create_lora_training_client",
+            accepted=(
+                "base_model",
+                "rank",
+                "seed",
+                "train_mlp",
+                "train_attn",
+                "train_unembed",
+                "user_metadata",
+                "metadata",
+            ),
+        )
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
@@ -151,7 +170,17 @@ class ServiceClient:
         replicas: int | None = None,
         **kwargs,
     ) -> SamplingClient:
-        del retry_config, kwargs
+        if retry_config is not None:
+            warn_ignored(
+                {"retry_config": retry_config},
+                method="ServiceClient.create_sampling_client",
+                accepted=("model_path", "base_model", "replicas"),
+            )
+        warn_ignored(
+            kwargs,
+            method="ServiceClient.create_sampling_client",
+            accepted=("model_path", "base_model", "retry_config", "replicas"),
+        )
         session_id, actors = self._session.create_sampler_actors(
             base_model=base_model,
             model_path=model_path,
@@ -171,7 +200,11 @@ class ServiceClient:
         base_model = kwargs.pop("base_model", None)
         rank = kwargs.pop("rank", None)
         metadata = kwargs.pop("metadata", None)
-        del kwargs
+        warn_ignored(
+            kwargs,
+            method="ServiceClient.create_training_client_from_state",
+            accepted=("base_model", "rank", "metadata"),
+        )
         self._validate_checkpoint_for_restore(path, base_model=base_model, rank=rank)
         run_metadata = self._merged_metadata(metadata, user_metadata)
         session_id, actor = self._session.create_training_actor(
@@ -202,7 +235,11 @@ class ServiceClient:
         base_model = kwargs.pop("base_model", None)
         rank = kwargs.pop("rank", None)
         metadata = kwargs.pop("metadata", None)
-        del kwargs
+        warn_ignored(
+            kwargs,
+            method="ServiceClient.create_training_client_from_state_with_optimizer",
+            accepted=("base_model", "rank", "metadata"),
+        )
         self._validate_checkpoint_for_restore(path, base_model=base_model, rank=rank)
         run_metadata = self._merged_metadata(metadata, user_metadata)
         session_id, actor = self._session.create_training_actor(

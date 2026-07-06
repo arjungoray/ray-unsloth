@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ray_unsloth.errors import CheckpointError
-from ray_unsloth.types import CheckpointRef
+from ray_unsloth.types.checkpoints import CheckpointRef
 
 MANIFEST_NAME = "manifest.json"
 

@@ -111,7 +111,9 @@ def validate_datum_inputs(spec: LossSpec, loss_fn_inputs: dict[str, Any], *, dat
 # ---------------------------------------------------------------------------
 
 
-def _importance_sampling_token_loss(*, ratio: Any, advantages: Any, current_logprobs: Any, config: dict[str, Any]) -> Any:
+def _importance_sampling_token_loss(
+    *, ratio: Any, advantages: Any, current_logprobs: Any, config: dict[str, Any]
+) -> Any:
     del current_logprobs, config
     return -ratio * advantages
 
