@@ -143,13 +143,16 @@ class RunStore:
         data = json.loads(path.read_text())
         return RunRecord(**data)
 
-    def list_runs(self) -> list[RunRecord]:
+    def list_runs(self, app: str | None = None) -> list[RunRecord]:
         runs = []
         for path in sorted(self._runs_dir().glob("run-*.json")):
             try:
-                runs.append(RunRecord(**json.loads(path.read_text())))
+                record = RunRecord(**json.loads(path.read_text()))
             except (json.JSONDecodeError, TypeError):
                 continue
+            if app is not None and (not isinstance(record.metadata, dict) or record.metadata.get("app") != app):
+                continue
+            runs.append(record)
         return sorted(runs, key=lambda r: r.created_at, reverse=True)
 
     def update_run(self, run_id: str, **updates: Any) -> RunRecord | None:

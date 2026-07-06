@@ -20,10 +20,12 @@ import tomllib
 import yaml
 
 from ray_unsloth import AdamParams, Datum, ModelInput, SamplingParams, ServiceClient
+from ray_unsloth.apps import app_install_status, list_apps
 from ray_unsloth.config import RuntimeConfig, load_config
 from ray_unsloth.errors import ERROR_CATALOG
 from ray_unsloth.evals import EvalSpec, run_eval
 from ray_unsloth.export import export_checkpoint, list_exporters
+from ray_unsloth.plugins import load_entry_point_plugins
 from ray_unsloth.providers import get_provider, list_providers, resolve_provider_name
 from ray_unsloth.schema import config_json_schema
 from ray_unsloth.store import RunStore
@@ -621,6 +623,25 @@ def cmd_runs(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_apps(args: argparse.Namespace) -> int:
+    rows = []
+    for manifest in list_apps():
+        status = app_install_status(manifest)
+        rows.append({**manifest.to_dict(), **status})
+    if args.json:
+        print(json.dumps(rows, indent=2, sort_keys=True))
+    else:
+        for row in rows:
+            stage_names = ", ".join(stage["name"] for stage in row["stages"])
+            suffix = ""
+            if row["requires"]:
+                suffix = f" requires={','.join(row['requires'])}"
+                if row["missing_requires"]:
+                    suffix += f" missing={','.join(row['missing_requires'])}"
+            print(f"{row['name']:<16} {row['description']} [{stage_names}]{suffix}")
+    return 0
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     root = Path(load_config(args.config).checkpoint_root if args.config else args.path).expanduser()
     if args.yes:
@@ -640,6 +661,7 @@ def cmd_serve_ui(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    load_entry_point_plugins()
     parser = argparse.ArgumentParser(prog="ray-unsloth")
     parser.add_argument("--config", help="Path to a YAML runtime config.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -722,6 +744,10 @@ def build_parser() -> argparse.ArgumentParser:
     runs.add_argument("--json", action="store_true")
     runs.set_defaults(func=cmd_runs)
 
+    apps = sub.add_parser("apps", help="List registered ray-unsloth applications.")
+    apps.add_argument("--json", action="store_true")
+    apps.set_defaults(func=cmd_apps)
+
     clean = sub.add_parser("clean", help="Remove the local store directory.")
     clean.add_argument("--path", default="checkpoints")
     clean.add_argument("--yes", action="store_true")
@@ -731,6 +757,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve_ui.add_argument("--host", default="127.0.0.1")
     serve_ui.add_argument("--port", type=int, default=8765)
     serve_ui.set_defaults(func=cmd_serve_ui)
+
+    for manifest in list_apps():
+        app_parser = sub.add_parser(manifest.name, help=manifest.description, description=manifest.description)
+        app_sub = app_parser.add_subparsers(dest=f"{manifest.name}_command", required=True)
+        manifest.build_cli(app_sub)
 
     return parser
 

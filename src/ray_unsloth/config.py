@@ -189,6 +189,7 @@ class RuntimeConfig:
     provider: str | None = None
     provider_options: dict[str, Any] = field(default_factory=dict)
     plugins: list[str] = field(default_factory=list)
+    scribe: dict[str, Any] = field(default_factory=dict)
     run_name: str | None = None
     tracking: bool = True
     tracking_root: str | None = None
@@ -272,6 +273,7 @@ class RuntimeConfig:
             provider=data.get("provider"),
             provider_options=dict(data.get("provider_options", {})),
             plugins=list(data.get("plugins", [])),
+            scribe=dict(data.get("scribe", {})),
             run_name=data.get("run_name"),
             tracking=bool(data.get("tracking", True)),
             tracking_root=data.get("tracking_root"),

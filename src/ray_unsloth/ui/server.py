@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ray_unsloth.config import RuntimeConfig, load_config
+from ray_unsloth.plugins import apps as app_registry
 from ray_unsloth.providers import GPU_CATALOG, get_provider, list_providers, resolve_provider_name
 from ray_unsloth.store import RunStore
 
@@ -43,6 +44,22 @@ def create_app(config: RuntimeConfig | str | dict[str, Any] | None = None):
     @app.get("/api/runs")
     def runs():
         return [run.to_dict() for run in store.list_runs()]
+
+    @app.get("/api/apps")
+    def apps():
+        rows = []
+        for name, manifest in app_registry.items():
+            runs = [run.to_dict() for run in store.list_runs(app=name)]
+            rows.append(
+                {
+                    "name": manifest.name,
+                    "description": manifest.description,
+                    "stages": [stage.to_dict() for stage in manifest.stages],
+                    "requires": list(manifest.requires),
+                    "runs": runs,
+                }
+            )
+        return rows
 
     @app.get("/api/runs/{run_id}")
     def run_detail(run_id: str, after: float | None = None):

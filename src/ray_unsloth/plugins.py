@@ -213,6 +213,7 @@ exporters: Registry[Any] = Registry(kind="exporter")
 checkpoint_stores: Registry[Any] = Registry(kind="checkpoint store")
 metric_loggers: Registry[Any] = Registry(kind="metric logger")
 recipes: Registry[Any] = Registry(kind="model recipe")
+apps: Registry[Any] = Registry(kind="application")
 
 
 def all_registries() -> dict[str, Registry[Any]]:
@@ -225,4 +226,5 @@ def all_registries() -> dict[str, Registry[Any]]:
         "checkpoint_stores": checkpoint_stores,
         "metric_loggers": metric_loggers,
         "recipes": recipes,
+        "apps": apps,
     }

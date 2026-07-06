@@ -40,6 +40,7 @@ examples = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["ray_unsloth*", "ray_unsloth_apps*", "tinker*"]
 
 [tool.setuptools.package-data]
 ray_unsloth = ["py.typed", "ui/static/**"]
@@ -90,6 +91,9 @@ ignore_errors = true
 
 [project.scripts]
 ray-unsloth = "ray_unsloth.cli:main"
+
+[project.entry-points."ray_unsloth.plugins"]
+scribe = "ray_unsloth_apps.scribe:register"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
