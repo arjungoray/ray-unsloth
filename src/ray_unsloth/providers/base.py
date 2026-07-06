@@ -310,5 +310,6 @@ class RuntimeProvider(ABC):
     def _not_available(self, *, reason: str, hint: str) -> ProviderNotAvailableError:
         return ProviderNotAvailableError(
             f"Provider '{self.name}' cannot execute sessions in this build: {reason}",
+            code="RU-3002",
             hint=hint,
         )

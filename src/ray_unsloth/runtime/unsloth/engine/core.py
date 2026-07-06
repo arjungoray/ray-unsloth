@@ -28,7 +28,7 @@ from ray_unsloth.download import (
     make_token,
     pack_lora_archive,
 )
-from ray_unsloth.errors import UnsupportedLossError
+from ray_unsloth.errors import TrainingError, UnsupportedLossError
 from ray_unsloth.losses import get_loss, validate_datum_inputs
 from ray_unsloth.types import (
     AdamParams,
@@ -448,7 +448,11 @@ class UnslothEngine:
         import torch
 
         if not data:
-            raise ValueError("data must not be empty")
+            raise TrainingError(
+                "data must not be empty",
+                code="RU-4006",
+                hint="Pass at least one Datum before calling forward_backward.",
+            )
         input_ids = [datum.model_input.to_ints() for datum in data]
         lengths = [len(tokens) for tokens in input_ids]
         starts = []
@@ -711,7 +715,11 @@ class UnslothEngine:
 
         spec = get_loss(loss_fn)
         if spec.kind != "policy_gradient" or spec.token_loss is None:
-            raise UnsupportedLossError(f"Unsupported policy-gradient loss: {loss_fn}")
+            raise UnsupportedLossError(
+                f"Unsupported policy-gradient loss: {loss_fn}",
+                code="RU-4003",
+                hint="Use a registered policy_gradient loss with a token_loss implementation.",
+            )
         loss_config = spec.merged_config(loss_fn_config)
         batch = plan.batch
         prepared_rows = []
@@ -870,7 +878,11 @@ class UnslothEngine:
                 loss, _outputs, row_logprobs, ratios = self._policy_loss(data, loss_fn=loss_fn)
                 loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
             else:
-                raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+                raise UnsupportedLossError(
+                    f"Unsupported loss: {loss_fn}",
+                    code="RU-4001",
+                    hint="Choose one of the registered loss names.",
+                )
         value = float(loss.detach().cpu())
         return ForwardOutput(loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs)
 
@@ -898,9 +910,17 @@ class UnslothEngine:
             )
             loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
         else:
-            raise UnsupportedLossError(f"Unsupported loss '{loss_fn}'.")
+            raise UnsupportedLossError(
+                f"Unsupported loss '{loss_fn}'.",
+                code="RU-4001",
+                hint="Choose one of the registered loss names.",
+            )
         if not torch.isfinite(loss):
-            raise FloatingPointError(f"Non-finite training loss: {float(loss.detach().cpu())}")
+            raise TrainingError(
+                f"Non-finite training loss: {float(loss.detach().cpu())}",
+                code="RU-4005",
+                hint="Check the loss inputs and optimizer settings before retrying.",
+            )
         backward_loss = loss * self.world_size if self.is_distributed else loss
         backward_loss.backward()
         value = float(loss.detach().cpu())
@@ -921,7 +941,11 @@ class UnslothEngine:
         outputs = self.model(**plan.batch)
         if isinstance(loss_fn, str):
             if loss_fn not in self._custom_losses:
-                raise UnsupportedLossError(f"Custom loss is not registered: {loss_fn}")
+                raise UnsupportedLossError(
+                    f"Custom loss is not registered: {loss_fn}",
+                    code="RU-4004",
+                    hint="Register the custom loss before calling forward_backward_custom.",
+                )
             callable_loss = self._custom_losses[loss_fn]
         else:
             callable_loss = loss_fn
@@ -1304,7 +1328,11 @@ class UnslothEngine:
             tokens = tokens.tolist()
         if tokens and isinstance(tokens[0], list):
             if len(tokens) != 1:
-                raise ValueError("Expected a single tokenized stop sequence")
+                raise TrainingError(
+                    "Expected a single tokenized stop sequence",
+                    code="RU-4007",
+                    hint="Pass exactly one tokenized stop sequence at a time.",
+                )
             tokens = tokens[0]
         return list(tokens)
 
@@ -1443,7 +1471,11 @@ class UnslothEngine:
             dist.broadcast_object_list(values, src=0)
             manifest = values[0]
         if manifest is None:
-            raise RuntimeError("Rank 0 did not provide checkpoint manifest.")
+            raise TrainingError(
+                "Rank 0 did not provide checkpoint manifest.",
+                code="RU-4008",
+                hint="Ensure rank 0 saves a checkpoint manifest before restore.",
+            )
         self._validate_checkpoint_manifest(manifest, path)
         self.step = int(manifest.get("step", 0))
         resolved = resolve_path(path)

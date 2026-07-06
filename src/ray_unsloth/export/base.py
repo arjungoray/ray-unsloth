@@ -46,7 +46,11 @@ def export_checkpoint(target: str, checkpoint_path: str, output: str | None = No
     try:
         exporter = _registry.get(target)
     except Exception as exc:
-        raise ExportError(f"Unknown export target '{target}'. Available: {', '.join(_registry.names())}.") from exc
+        raise ExportError(
+            f"Unknown export target '{target}'. Available: {', '.join(_registry.names())}.",
+            code="RU-5001",
+            hint="Pick one of the registered exporter names.",
+        ) from exc
     return cast(ExportReport, exporter.export(checkpoint_path, output=output, **options))
 
 
@@ -57,7 +61,11 @@ class LocalDirExporter:
         del options
         source = resolve_path(checkpoint_path)
         if not source.exists():
-            raise ExportError(f"Checkpoint path does not exist: {source}")
+            raise ExportError(
+                f"Checkpoint path does not exist: {source}",
+                code="RU-5002",
+                hint="Verify the checkpoint path before exporting.",
+            )
         output_path = resolve_path(output or f"{source}-export")
         if output_path.exists():
             shutil.rmtree(output_path)
@@ -122,7 +130,11 @@ class StubExporter:
         del options
         source = resolve_path(checkpoint_path)
         if not source.exists():
-            raise ExportError(f"Checkpoint path does not exist: {source}")
+            raise ExportError(
+                f"Checkpoint path does not exist: {source}",
+                code="RU-5002",
+                hint="Verify the checkpoint path before exporting.",
+            )
         output_path = resolve_path(output or f"{source}-{self.name}-plan")
         output_path.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -174,7 +186,11 @@ class GGUFExporter:
 
         source = resolve_path(checkpoint_path)
         if not source.exists():
-            raise ExportError(f"Checkpoint path does not exist: {source}")
+            raise ExportError(
+                f"Checkpoint path does not exist: {source}",
+                code="RU-5002",
+                hint="Verify the checkpoint path before exporting.",
+            )
         manifest = read_manifest(source)
         base_model = str(options.get("base_model") or manifest.get("base_model") or "")
         outtype = str(options.get("outtype", "f16"))
@@ -221,7 +237,9 @@ class GGUFExporter:
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode != 0:
             raise ExportError(
-                f"convert_lora_to_gguf.py failed (exit {result.returncode}):\n{result.stderr.strip()[-2000:]}"
+                f"convert_lora_to_gguf.py failed (exit {result.returncode}):\n{result.stderr.strip()[-2000:]}",
+                code="RU-5003",
+                hint="Inspect the llama.cpp output or use the generated plan artifact.",
             )
         return ExportReport(
             target=self.name,
@@ -275,7 +293,11 @@ class OllamaExporter:
                 text=True,
             )
             if result.returncode != 0:
-                raise ExportError(f"ollama create failed: {result.stderr.strip()[-2000:]}")
+                raise ExportError(
+                    f"ollama create failed: {result.stderr.strip()[-2000:]}",
+                    code="RU-5004",
+                    hint="Inspect the Ollama error output or run ollama create manually.",
+                )
             notes.append(f"Created Ollama model '{model_name}'. Try: ollama run {model_name}")
         else:
             notes.append(f"Run: ollama create {model_name} -f {modelfile} (or pass create=True)")

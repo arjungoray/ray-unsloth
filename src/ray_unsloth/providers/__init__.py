@@ -61,10 +61,18 @@ def get_provider(name: str) -> RuntimeProvider:
     try:
         provider_cls = provider_registry.get(name)
     except PluginError as exc:
-        raise ProviderError(str(exc)) from None
+        raise ProviderError(
+            str(exc),
+            code="RU-3001",
+            hint="Use a registered provider name or install the plugin that provides it.",
+        ) from None
     provider = provider_cls() if isinstance(provider_cls, type) else provider_cls
     if not isinstance(provider, RuntimeProvider):
-        raise ProviderError(f"Registered provider '{name}' is not a RuntimeProvider (got {type(provider).__name__}).")
+        raise ProviderError(
+            f"Registered provider '{name}' is not a RuntimeProvider (got {type(provider).__name__}).",
+            code="RU-3001",
+            hint="Check the provider plugin's entry point and return type.",
+        )
     return provider
 
 

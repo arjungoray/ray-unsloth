@@ -82,7 +82,9 @@ def get_loss(name: str) -> LossSpec:
         return cast(LossSpec, _registry.get(name))
     except Exception:
         raise UnsupportedLossError(
-            f"Unsupported loss '{name}'. Registered losses: {', '.join(_registry.names())}."
+            f"Unsupported loss '{name}'. Registered losses: {', '.join(_registry.names())}.",
+            code="RU-4001",
+            hint="Choose one of the registered loss names.",
         ) from None
 
 
@@ -101,7 +103,9 @@ def validate_datum_inputs(spec: LossSpec, loss_fn_inputs: dict[str, Any], *, dat
         raise UnsupportedLossError(
             f"Datum {datum_index} is missing required loss_fn_inputs for '{spec.name}': "
             f"{missing}. Required: {list(spec.required_inputs)}; "
-            f"optional: {list(spec.optional_inputs)}."
+            f"optional: {list(spec.optional_inputs)}.",
+            code="RU-4002",
+            hint="Add the missing loss_fn_inputs keys before calling forward_backward.",
         )
 
 

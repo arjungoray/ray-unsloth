@@ -42,19 +42,25 @@ class _LazyRef:
         module_name, _, attr = self.target.partition(":")
         if not module_name or not attr:
             raise PluginError(
-                f"Invalid lazy plugin reference '{self.target}'. Expected the form 'package.module:attribute'."
+                f"Invalid lazy plugin reference '{self.target}'. Expected the form 'package.module:attribute'.",
+                code="RU-6001",
+                hint="Use a module path and attribute name joined by a colon.",
             )
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
             raise PluginError(
-                f"Could not import module '{module_name}' for plugin reference '{self.target}': {exc}"
+                f"Could not import module '{module_name}' for plugin reference '{self.target}': {exc}",
+                code="RU-6002",
+                hint="Install the plugin package or fix the module path.",
             ) from exc
         try:
             return getattr(module, attr)
         except AttributeError as exc:
             raise PluginError(
-                f"Module '{module_name}' has no attribute '{attr}' (from plugin reference '{self.target}')."
+                f"Module '{module_name}' has no attribute '{attr}' (from plugin reference '{self.target}').",
+                code="RU-6003",
+                hint="Export the named attribute from the plugin module.",
             ) from exc
 
 
@@ -79,7 +85,9 @@ class Registry(Generic[T]):
         def _add(item: T) -> T:
             if not replace and name in self._entries:
                 raise PluginError(
-                    f"A {self.kind} named '{name}' is already registered. Pass replace=True to override it."
+                    f"A {self.kind} named '{name}' is already registered. Pass replace=True to override it.",
+                    code="RU-6004",
+                    hint="Use replace=True only when intentionally overriding a built-in entry.",
                 )
             self._entries[name] = item
             if description:
@@ -99,7 +107,9 @@ class Registry(Generic[T]):
             entry = self._entries[name]
         except KeyError:
             raise PluginError(
-                f"Unknown {self.kind} '{name}'. Available: {', '.join(sorted(self._entries)) or 'none registered'}."
+                f"Unknown {self.kind} '{name}'. Available: {', '.join(sorted(self._entries)) or 'none registered'}.",
+                code="RU-6005",
+                hint="Register the plugin first or choose one of the listed names.",
             ) from None
         if isinstance(entry, _LazyRef):
             entry = entry.resolve()
@@ -155,7 +165,9 @@ def load_entry_point_plugins(*, force: bool = False) -> list[str]:
             loaded.append(entry_point.name)
         except Exception as exc:
             raise PluginError(
-                f"Plugin entry point '{entry_point.name}' ({entry_point.value}) failed to load: {exc}"
+                f"Plugin entry point '{entry_point.name}' ({entry_point.value}) failed to load: {exc}",
+                code="RU-6002",
+                hint="Check the plugin package import path and registration hook.",
             ) from exc
     _entry_points_loaded = True
     return loaded
@@ -176,7 +188,9 @@ def load_config_plugins(modules: list[str]) -> list[str]:
             raise PluginError(
                 f"Could not import plugin module '{module_path}' listed in the "
                 f"config 'plugins' section: {exc}. Check that the package is "
-                "installed and the module path is spelled correctly."
+                "installed and the module path is spelled correctly.",
+                code="RU-6002",
+                hint="Install the plugin package and verify the module path.",
             ) from exc
         register = getattr(module, "register", None)
         if callable(register):

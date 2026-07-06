@@ -94,7 +94,11 @@ class ModalSession:
         try:
             import ray
         except ImportError as exc:
-            raise RayUnavailableError("Ray is required for local orchestration.") from exc
+            raise RayUnavailableError(
+                "Ray is required for local orchestration.",
+                code="RU-3004",
+                hint="Install ray in the local environment or choose a non-Modal provider.",
+            ) from exc
         if not ray.is_initialized():
             ray.init(
                 address=self.config.ray.address,
@@ -108,7 +112,9 @@ class ModalSession:
             import modal
         except ImportError as exc:
             raise RayUnavailableError(
-                "Modal is required when modal.enabled is true. Install with `pip install -e '.[modal]'`."
+                "Modal is required when modal.enabled is true. Install with `pip install -e '.[modal]'`.",
+                code="RU-3004",
+                hint="Install the modal extra or switch the provider away from modal.",
             ) from exc
 
         modal_config = self.config.modal

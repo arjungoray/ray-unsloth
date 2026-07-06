@@ -35,7 +35,11 @@ class RaySession:
         try:
             import ray
         except ImportError as exc:
-            raise RayUnavailableError("Ray is required for ServiceClient runtime operations.") from exc
+            raise RayUnavailableError(
+                "Ray is required for ServiceClient runtime operations.",
+                code="RU-3003",
+                hint="Install ray or switch to the fake provider for local development.",
+            ) from exc
         if not ray.is_initialized():
             ray.init(
                 address=self.config.ray.address,

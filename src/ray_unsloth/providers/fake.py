@@ -512,7 +512,11 @@ class FakeTrainerActor:
         validate_restore_manifest(manifest, path=path, base_model=self.base_model, lora_rank=self.lora_rank)
         weights_path = resolve_path(path) / WEIGHTS_FILE
         if not weights_path.exists():
-            raise CheckpointError(f"Checkpoint at {path} has no {WEIGHTS_FILE}; it was not saved by the fake engine.")
+            raise CheckpointError(
+                f"Checkpoint at {path} has no {WEIGHTS_FILE}; it was not saved by the fake engine.",
+                code="RU-2008",
+                hint="Use a checkpoint created by the fake engine or export a saved state.",
+            )
         self.table = _BigramTable.from_json(json.loads(weights_path.read_text()), self.seed)
         step = manifest.get("step")
         if isinstance(step, int):

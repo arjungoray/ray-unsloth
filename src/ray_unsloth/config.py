@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from ray_unsloth.errors import ConfigurationError
+
 DEFAULT_LORA_TARGET_MODULES = [
     "q_proj",
     "k_proj",
@@ -102,13 +104,25 @@ class SpeedConfig:
 
     def __post_init__(self) -> None:
         if self.profile not in {"quality", "throughput"}:
-            raise ValueError("speed.profile must be 'quality' or 'throughput'.")
+            raise ConfigurationError(
+                "speed.profile must be 'quality' or 'throughput'.",
+                code="RU-1001",
+                hint="Choose speed.profile: quality or throughput.",
+            )
         if self.optimizer not in {"adamw_8bit", "paged_adamw_8bit", "adamw_torch"}:
-            raise ValueError("speed.optimizer must be 'adamw_8bit', 'paged_adamw_8bit', or 'adamw_torch'.")
+            raise ConfigurationError(
+                "speed.optimizer must be 'adamw_8bit', 'paged_adamw_8bit', or 'adamw_torch'.",
+                code="RU-1002",
+                hint="Pick one of the supported optimizer names.",
+            )
         for field_name in ("padding_free", "sample_packing", "vllm_standby", "flash_attention_2"):
             value = getattr(self, field_name)
             if value not in {"auto", True, False}:
-                raise ValueError(f"speed.{field_name} must be 'auto', true, or false.")
+                raise ConfigurationError(
+                    f"speed.{field_name} must be 'auto', true, or false.",
+                    code="RU-1003",
+                    hint="Use auto, true, or false for the speed toggle.",
+                )
 
 
 @dataclass(slots=True)
@@ -126,11 +140,23 @@ class DistributedConfig:
         if not self.enabled and self.mode is None:
             return
         if self.mode != "ddp":
-            raise ValueError("distributed.mode must be 'ddp' when distributed training is enabled.")
+            raise ConfigurationError(
+                "distributed.mode must be 'ddp' when distributed training is enabled.",
+                code="RU-1004",
+                hint="Set distributed.mode to ddp or disable distributed training.",
+            )
         if self.num_nodes != 1:
-            raise ValueError("Phase 1 distributed training only supports distributed.num_nodes == 1.")
+            raise ConfigurationError(
+                "Phase 1 distributed training only supports distributed.num_nodes == 1.",
+                code="RU-1005",
+                hint="Keep distributed.num_nodes at 1 for the current runtime.",
+            )
         if self.gpus_per_node < 1:
-            raise ValueError("distributed.gpus_per_node must be at least 1.")
+            raise ConfigurationError(
+                "distributed.gpus_per_node must be at least 1.",
+                code="RU-1006",
+                hint="Use at least one GPU per node when enabling distributed training.",
+            )
 
 
 @dataclass(slots=True)
@@ -178,9 +204,11 @@ class RuntimeConfig:
             )
             _WARNED_LEGACY_MODAL_SWITCH = True
         if self.provider is not None and self.modal.enabled and self.provider not in ("modal",):
-            raise ValueError(
+            raise ConfigurationError(
                 f"Conflicting runtime selection: provider is '{self.provider}' but modal.enabled is true. "
-                "Set provider: modal, or drop modal.enabled (it is the legacy switch)."
+                "Set provider: modal, or drop modal.enabled (it is the legacy switch).",
+                code="RU-1007",
+                hint="Prefer provider: modal and remove the legacy modal.enabled switch.",
             )
 
     @classmethod
@@ -205,7 +233,11 @@ class RuntimeConfig:
         model_configs = {}
         for name, config in data.get("model_configs", {}).items():
             if not isinstance(config, dict):
-                raise ValueError(f"model_configs.{name} must be a mapping with optional model and lora sections.")
+                raise ConfigurationError(
+                    f"model_configs.{name} must be a mapping with optional model and lora sections.",
+                    code="RU-1008",
+                    hint="Each model_configs entry must be a YAML mapping.",
+                )
             model_configs[name] = ModelRuntimeConfig.from_dict(
                 config,
                 default_model=model,
@@ -215,10 +247,12 @@ class RuntimeConfig:
         if default_model_config is not None:
             if default_model_config not in model_configs:
                 available = _format_available_model_configs(model_configs)
-                raise ValueError(
+                raise ConfigurationError(
                     f"model.config '{default_model_config}' does not match a key in model_configs. "
                     f"Available model configs: {available}. Set model.config to one of these aliases "
-                    "or remove model.config to use model.base_model."
+                    "or remove model.config to use model.base_model.",
+                    code="RU-1009",
+                    hint="Set model.config to one of the keys listed in model_configs.",
                 )
             selected = model_configs[default_model_config]
             model = selected.model
@@ -323,15 +357,27 @@ class RuntimeConfig:
 
 def _build_dataclass(cls, data: dict[str, Any], *, path: str):
     if not isinstance(data, dict):
-        raise ValueError(f"{path} must be a mapping.")
+        raise ConfigurationError(
+            f"{path} must be a mapping.",
+            code="RU-1010",
+            hint="Use a YAML mapping for this section.",
+        )
     field_names = {field.name for field in fields(cls)}
     unknown = sorted(set(data) - field_names)
     if unknown:
-        raise ValueError(f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.")
+        raise ConfigurationError(
+            f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.",
+            code="RU-1010",
+            hint="Remove the unknown keys or rename them to match the config dataclass.",
+        )
     try:
         return cls(**data)
     except TypeError as exc:
-        raise ValueError(f"Invalid value for {path}: {exc}") from exc
+        raise ConfigurationError(
+            f"Invalid value for {path}: {exc}",
+            code="RU-1010",
+            hint="Check the field types and nested mappings in the YAML config.",
+        ) from exc
 
 
 def _replace_dataclass(instance, updates: dict[str, Any], *, path: str):
@@ -339,7 +385,11 @@ def _replace_dataclass(instance, updates: dict[str, Any], *, path: str):
     field_names = set(values)
     unknown = sorted(set(updates) - field_names)
     if unknown:
-        raise ValueError(f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.")
+        raise ConfigurationError(
+            f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.",
+            code="RU-1010",
+            hint="Remove the unknown keys or rename them to match the config dataclass.",
+        )
     values.update(updates)
     return type(instance)(**values)
 

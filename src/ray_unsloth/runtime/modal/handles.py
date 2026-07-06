@@ -52,7 +52,11 @@ def _init_modal_local_ray(init_kwargs: dict[str, Any]):
     try:
         import ray
     except ImportError as exc:
-        raise RayUnavailableError("Ray is required for Modal DDP orchestration.") from exc
+        raise RayUnavailableError(
+            "Ray is required for Modal DDP orchestration.",
+            code="RU-3004",
+            hint="Install ray or disable distributed Modal training.",
+        ) from exc
     if not ray.is_initialized():
         ray.init(
             namespace="ray-unsloth-modal",

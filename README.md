@@ -109,6 +109,10 @@ ray-unsloth --config ray-unsloth.yaml runs
 ray-unsloth export checkpoints/.../smoke --target hf --output exported-smoke
 ```
 
+- `ray-unsloth errors` - print the stable error-code catalog.
+- `ray-unsloth schema` - emit the runtime config JSON Schema.
+- `ray-unsloth up` - auto-detect a provider, confirm the plan, and run the golden path.
+
 Runtime providers are plugin-backed. `local-ray` remains the default, `modal` is optional, `fake` is CI-friendly, and planned providers (`skypilot`, `kuberay`, `slurm`, `runpod`) render launch artifacts for attaching Ray clusters.
 
 Install the UI extra to browse local runs, metrics, checkpoints, evals, providers, config validation, and topology:
