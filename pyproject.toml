@@ -25,6 +25,10 @@ unsloth = [
 modal = [
   "modal>=1.4.2",
 ]
+ui = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+]
 dev = [
   "pytest>=9.0.3",
 ]
@@ -36,6 +40,9 @@ examples = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.scripts]
+ray-unsloth = "ray_unsloth.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

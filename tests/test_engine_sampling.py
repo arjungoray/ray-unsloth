@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import torch
 
 from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
+from ray_unsloth.losses import LossSpec, register_loss
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
 from ray_unsloth.types import AdamParams, Datum, ModelInput, SamplingParams, TensorData
 
@@ -739,6 +740,41 @@ def test_policy_loss_returns_logprobs_and_ratios():
     assert torch.isfinite(loss)
     assert loss_outputs[0]["logprobs"].tolist()[1] < 0.0
     assert loss_outputs[0]["ratios"].tolist()[1] > 0.0
+
+
+def test_policy_loss_uses_registered_custom_loss():
+    def token_loss(*, ratio, advantages, current_logprobs, config):
+        del ratio, current_logprobs
+        return -config["scale"] * advantages
+
+    register_loss(
+        LossSpec(
+            name="unit_custom_policy",
+            kind="policy_gradient",
+            description="test-only custom policy loss",
+            required_inputs=("target_tokens", "logprobs", "advantages"),
+            config_defaults={"scale": 2.0},
+            token_loss=token_loss,
+        ),
+        replace=True,
+    )
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = FakeLossModel()
+    engine.tokenizer = FakeTokenizer()
+    datum = Datum(
+        model_input=ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": TensorData(data=[3, 4], dtype="int64", shape=[2]),
+            "logprobs": TensorData(data=[0.0, -1.0], dtype="float32", shape=[2]),
+            "advantages": TensorData(data=[0.0, 1.5], dtype="float32", shape=[2]),
+        },
+    )
+
+    loss, _outputs, logprobs, ratios = engine._policy_loss([datum], loss_fn="unit_custom_policy")
+
+    assert torch.isclose(loss, torch.tensor(-3.0, dtype=loss.dtype))
+    assert logprobs[0, 1] < 0
+    assert ratios[0, 1] > 0
 
 
 def test_policy_loss_uses_logits_to_keep_for_completion_suffix():

@@ -158,9 +158,20 @@ class RuntimeConfig:
     modal: ModalConfig = field(default_factory=ModalConfig)
     checkpoint_root: str = "checkpoints"
     supported_models: list[str] = field(default_factory=list)
+    provider: str | None = None
+    provider_options: dict[str, Any] = field(default_factory=dict)
+    plugins: list[str] = field(default_factory=list)
+    run_name: str | None = None
+    tracking: bool = True
+    tracking_root: str | None = None
 
     def __post_init__(self) -> None:
         self.distributed.validate()
+        if self.provider is not None and self.modal.enabled and self.provider not in ("modal",):
+            raise ValueError(
+                f"Conflicting runtime selection: provider is '{self.provider}' but modal.enabled is true. "
+                "Set provider: modal, or drop modal.enabled (it is the legacy switch)."
+            )
 
     @classmethod
     def from_file(cls, path: str | Path) -> "RuntimeConfig":
@@ -214,7 +225,36 @@ class RuntimeConfig:
             modal=_build_dataclass(ModalConfig, data.get("modal", {}), path="modal"),
             checkpoint_root=data.get("checkpoint_root", "checkpoints"),
             supported_models=list(data.get("supported_models", [])),
+            provider=data.get("provider"),
+            provider_options=dict(data.get("provider_options", {})),
+            plugins=list(data.get("plugins", [])),
+            run_name=data.get("run_name"),
+            tracking=bool(data.get("tracking", True)),
+            tracking_root=data.get("tracking_root"),
         )
+
+    @property
+    def store_root(self) -> str:
+        """Where the client-side run store lives.
+
+        Defaults to ``checkpoint_root``, but ``tracking_root`` overrides it for
+        topologies where ``checkpoint_root`` is a remote volume path (e.g. the
+        Modal ``/checkpoints`` mount) that is not writable on the client.
+
+        When neither is configured (checkpoint_root is still the bare default),
+        the ``RAY_UNSLOTH_DEFAULT_STORE_ROOT`` environment variable relocates
+        the store — used by the test suite to keep default-config clients from
+        writing into the working tree.
+        """
+        if self.tracking_root:
+            return self.tracking_root
+        if self.checkpoint_root == "checkpoints":
+            import os
+
+            override = os.environ.get("RAY_UNSLOTH_DEFAULT_STORE_ROOT")
+            if override:
+                return override
+        return self.checkpoint_root
 
     def resolve_model_configs(self, base_model: str | None = None) -> tuple[ModelConfig, LoRAConfig]:
         """Return the model and LoRA config for a requested model name or alias."""
@@ -235,6 +275,40 @@ class RuntimeConfig:
         if self.model_configs:
             return list(self.model_configs)
         return [self.model.base_model]
+
+    def validate(self) -> list[Any]:
+        """Return non-throwing validation issues for CLI/UI workflows."""
+        from ray_unsloth.providers import get_provider, resolve_provider_name
+        from ray_unsloth.providers.base import ValidationIssue, estimate_gpu_fit
+
+        issues: list[Any] = []
+        provider_name = resolve_provider_name(self)
+        try:
+            provider = get_provider(provider_name)
+        except Exception as exc:
+            return [
+                ValidationIssue(
+                    severity="error",
+                    path="provider",
+                    message=f"Unknown or invalid provider '{provider_name}': {exc}",
+                )
+            ]
+        issues.extend(provider.validate(self))
+        gpu = (self.provider_options or {}).get("gpu", self.modal.gpu)
+        fit = estimate_gpu_fit(self.model, self.lora, gpu=gpu)
+        if fit.fits is False:
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    path="model",
+                    message=(
+                        f"Estimated memory for {self.model.base_model} is "
+                        f"{fit.estimated_required_gb:.1f} GB on {gpu}; this likely will not fit."
+                    ),
+                    hint="Choose a larger GPU, shorter sequence length, or smaller model.",
+                )
+            )
+        return issues
 
 
 def _build_dataclass(cls, data: dict[str, Any], *, path: str):
@@ -277,10 +351,16 @@ def load_config(config: str | Path | RuntimeConfig | dict[str, Any] | None) -> R
     if config is None:
         return RuntimeConfig()
     if isinstance(config, RuntimeConfig):
-        return config
-    if isinstance(config, (str, Path)):
-        return RuntimeConfig.from_file(config)
-    return RuntimeConfig.from_dict(config)
+        loaded = config
+    elif isinstance(config, (str, Path)):
+        loaded = RuntimeConfig.from_file(config)
+    else:
+        loaded = RuntimeConfig.from_dict(config)
+    if loaded.plugins:
+        from ray_unsloth.plugins import load_config_plugins
+
+        load_config_plugins(loaded.plugins)
+    return loaded
 
 
 def lora_target_modules_for_flags(

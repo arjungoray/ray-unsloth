@@ -8,6 +8,9 @@ from ray_unsloth.checkpoints import read_manifest, validate_restore_manifest
 from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.clients.training import TrainingClient
 from ray_unsloth.config import RuntimeConfig, load_config, lora_target_modules_for_flags
+from ray_unsloth.losses import loss_names
+from ray_unsloth.plugins import load_entry_point_plugins
+from ray_unsloth.providers import get_provider, resolve_provider_name
 from ray_unsloth.runtime.modal import ModalSession
 from ray_unsloth.runtime.ray import RaySession
 from ray_unsloth.types import GetServerCapabilitiesResponse
@@ -30,7 +33,24 @@ class ServiceClient:
         self.user_metadata = dict(user_metadata or {}) if isinstance(user_metadata, dict) else {}
         self.project_id = project_id
         self.config = load_config(config)
-        self._session = ModalSession(self.config) if self.config.modal.enabled else RaySession(self.config)
+        load_entry_point_plugins()
+        self.provider_name = resolve_provider_name(self.config)
+        self._session = self._create_session(self.provider_name)
+        self._store = None
+        self._open_run_ids: list[str] = []
+        if self.config.tracking:
+            from ray_unsloth.store import RunStore
+
+            self._store = RunStore(self.config.store_root)
+
+    def _create_session(self, provider_name: str):
+        # RaySession/ModalSession stay module attributes so tests (and callers)
+        # can monkeypatch them; every other provider resolves via the registry.
+        if provider_name == "local-ray":
+            return RaySession(self.config)
+        if provider_name == "modal":
+            return ModalSession(self.config)
+        return get_provider(provider_name).connect(self.config)
 
     @staticmethod
     def _looks_like_config(value: Any) -> bool:
@@ -48,6 +68,11 @@ class ServiceClient:
             "modal",
             "checkpoint_root",
             "supported_models",
+            "provider",
+            "provider_options",
+            "plugins",
+            "run_name",
+            "tracking",
         }
         return any(key in value for key in config_keys)
 
@@ -59,10 +84,10 @@ class ServiceClient:
             max_sampler_replicas=self.config.resources.sampler_replicas,
             max_concurrent_trainers=self.config.resources.trainer_replicas,
             features={
-                "losses": ["cross_entropy", "importance_sampling", "ppo", "cispo"],
+                "losses": loss_names(),
                 "checkpointing": True,
                 "ray_namespace": self.config.ray.namespace,
-                "runtime_backend": "modal" if self.config.modal.enabled else "ray",
+                "runtime_backend": self.provider_name,
                 "trainer_replicas": self.config.resources.trainer_replicas,
                 "speed": {
                     "profile": self.config.speed.profile,
@@ -107,7 +132,13 @@ class ServiceClient:
             target_modules=target_modules,
             metadata=run_metadata,
         )
-        return TrainingClient(session_id=session_id, actor=actor, service=self)
+        recorder = self._start_run(
+            session_id=session_id,
+            base_model=base_model,
+            rank=rank,
+            metadata=run_metadata,
+        )
+        return TrainingClient(session_id=session_id, actor=actor, service=self, recorder=recorder)
 
     def create_lora_training_client_async(self, *args, **kwargs) -> TrainingClient:
         return self.create_lora_training_client(*args, **kwargs)
@@ -142,14 +173,22 @@ class ServiceClient:
         metadata = kwargs.pop("metadata", None)
         del kwargs
         self._validate_checkpoint_for_restore(path, base_model=base_model, rank=rank)
+        run_metadata = self._merged_metadata(metadata, user_metadata)
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             model_path=path,
             with_optimizer=False,
-            metadata=self._merged_metadata(metadata, user_metadata),
+            metadata=run_metadata,
         )
-        return TrainingClient(session_id=session_id, actor=actor, service=self)
+        recorder = self._start_run(
+            session_id=session_id,
+            base_model=base_model,
+            rank=rank,
+            metadata=run_metadata,
+            restored_from=path,
+        )
+        return TrainingClient(session_id=session_id, actor=actor, service=self, recorder=recorder)
 
     def create_training_client_from_state_async(self, *args, **kwargs) -> TrainingClient:
         return self.create_training_client_from_state(*args, **kwargs)
@@ -165,14 +204,22 @@ class ServiceClient:
         metadata = kwargs.pop("metadata", None)
         del kwargs
         self._validate_checkpoint_for_restore(path, base_model=base_model, rank=rank)
+        run_metadata = self._merged_metadata(metadata, user_metadata)
         session_id, actor = self._session.create_training_actor(
             base_model=base_model,
             lora_rank=rank,
             model_path=path,
             with_optimizer=True,
-            metadata=self._merged_metadata(metadata, user_metadata),
+            metadata=run_metadata,
         )
-        return TrainingClient(session_id=session_id, actor=actor, service=self)
+        recorder = self._start_run(
+            session_id=session_id,
+            base_model=base_model,
+            rank=rank,
+            metadata=run_metadata,
+            restored_from=path,
+        )
+        return TrainingClient(session_id=session_id, actor=actor, service=self, recorder=recorder)
 
     def create_training_client_from_state_with_optimizer_async(self, *args, **kwargs) -> TrainingClient:
         return self.create_training_client_from_state_with_optimizer(*args, **kwargs)
@@ -190,9 +237,60 @@ class ServiceClient:
         return response
 
     def close(self) -> None:
+        if self._store is not None:
+            for run_id in self._open_run_ids:
+                try:
+                    record = self._store.get_run(run_id)
+                    if record is not None and record.status == "running":
+                        self._store.update_run(run_id, status="completed")
+                except Exception:
+                    pass
+            self._open_run_ids.clear()
         close = getattr(self._session, "close", None)
         if callable(close):
             close()
+
+    def _start_run(
+        self,
+        *,
+        session_id: str,
+        base_model: str | None,
+        rank: int | None,
+        metadata: dict[str, Any],
+        restored_from: str | None = None,
+    ):
+        """Create a run record + recorder for a new training client (best-effort)."""
+        if self._store is None:
+            return None
+        try:
+            from dataclasses import asdict
+
+            model_config, lora_config = self.config.resolve_model_configs(base_model)
+            resolved_model = model_config.base_model
+            resolved_rank = rank if rank is not None else lora_config.rank
+            record = self._store.create_run(
+                name=self.config.run_name,
+                provider=self.provider_name,
+                base_model=resolved_model,
+                lora_rank=resolved_rank,
+                session_id=session_id,
+                metadata=metadata,
+                config={
+                    "model": asdict(model_config),
+                    "lora": asdict(lora_config),
+                    "provider": self.provider_name,
+                    "checkpoint_root": self.config.checkpoint_root,
+                },
+            )
+            self._open_run_ids.append(record.id)
+            from ray_unsloth.recording import RunRecorder
+
+            recorder = RunRecorder(self._store, record.id, base_model=resolved_model)
+            if restored_from is not None:
+                recorder.note_loaded_checkpoint(restored_from)
+            return recorder
+        except Exception:
+            return None
 
     def _validate_checkpoint_for_restore(
         self,

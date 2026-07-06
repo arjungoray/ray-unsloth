@@ -20,6 +20,7 @@ const sidebars = {
         'guides/runtimes',
         'guides/examples',
         'guides/extending',
+        'guides/control-plane',
         'guides/testing',
       ],
     },

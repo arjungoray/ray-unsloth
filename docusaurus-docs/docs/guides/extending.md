@@ -4,7 +4,27 @@ sidebar_position: 6
 
 # Extending ray-unsloth
 
-The codebase is intentionally small enough to extend directly.
+The codebase is intentionally small enough to extend directly, and every
+extensible surface is a **typed registry** in `ray_unsloth.plugins`:
+
+| Registry | Contents |
+| --- | --- |
+| `providers` | runtime providers (`local-ray`, `modal`, `fake`, `skypilot`, ...) |
+| `losses` | `LossSpec` entries dispatched by the engine |
+| `scorers` | eval scorers (`exact_match`, `contains`, ...) |
+| `dataset_loaders` | eval dataset adapters |
+| `exporters` | export targets (`local`, `hf`, `gguf`, `ollama`, `vllm`, `sglang`) |
+| `checkpoint_stores`, `metric_loggers`, `recipes` | reserved for the same pattern |
+
+Plugins load two ways:
+
+1. **Config** — `plugins: [my_pkg.my_plugin]` imports the module at
+   `load_config` time (a module-level `register()` is called if present).
+2. **Entry points** — declare `[project.entry-points."ray_unsloth.plugins"]`
+   in your package; the hook runs once when a `ServiceClient` is created.
+
+`examples/sample_plugin` is a complete working plugin that registers an eval
+scorer and an exporter.
 
 ## Add a model alias
 
@@ -47,22 +67,63 @@ supported_models:
   - my-model
 ```
 
-## Add a new built-in loss
+## Add a new loss
 
-Loss logic is concentrated in `UnslothEngine`.
+Losses are registry entries, not engine edits. A `LossSpec` declares the loss
+name, its required `loss_fn_inputs` keys (validated at submit time), config
+defaults, and — for policy-gradient losses — the token-loss function the
+engine calls with torch tensors:
 
-1. Add validation and implementation method near `_cross_entropy_loss` and `_policy_loss`.
-2. Add handling in `forward`.
-3. Add handling in `forward_backward`.
-4. Return per-row `loss_fn_outputs` when practical.
-5. Add tests in `tests/test_engine_sampling.py` or a new focused test file.
-6. Add docs under `docusaurus-docs/docs/api/losses.md`.
+```python
+import torch
+from ray_unsloth.losses import LossSpec, register_loss
 
-Keep datum fields explicit and Tinker-shaped where possible.
+def grpo_token_loss(*, ratio, advantages, current_logprobs, config):
+    clipped = ratio.clamp(1 - config["clip_eps"], 1 + config["clip_eps"])
+    return -torch.minimum(ratio * advantages, clipped * advantages)
 
-## Add a new runtime backend
+register_loss(LossSpec(
+    name="grpo_clip",
+    kind="policy_gradient",
+    description="GRPO-style clipped surrogate",
+    required_inputs=("target_tokens", "logprobs", "advantages"),
+    config_defaults={"clip_eps": 0.2},
+    token_loss=grpo_token_loss,
+))
+```
 
-Runtime sessions need to provide:
+After registration, `training_client.forward_backward(data, loss_fn="grpo_clip")`
+works end-to-end — on the real engine, on DDP workers, and on the fake
+provider — with no engine changes. The advertised loss list in
+`get_server_capabilities()` is derived from the registry, so it stays in sync
+automatically. Register from a config plugin (`plugins: [my_pkg.losses]`) or a
+`ray_unsloth.plugins` entry point.
+
+Losses with non-token-parallel structure (DPO pairs, KTO) go through
+`TrainingClient.forward_backward_custom` — see `examples/sample_plugin` for
+the plugin pattern.
+
+## Add a new runtime provider
+
+Providers subclass `ray_unsloth.providers.RuntimeProvider` and register into
+`ray_unsloth.plugins.providers`:
+
+```python
+from ray_unsloth.plugins import providers
+from ray_unsloth.providers import RuntimeProvider
+
+class MyClusterProvider(RuntimeProvider):
+    name = "my-cluster"
+    description = "..."
+    def capabilities(self): ...
+    def validate(self, config): ...     # list[ValidationIssue]
+    def plan(self, config): ...         # LaunchPlan with rendered artifacts
+    def connect(self, config): ...      # return a session
+
+providers.register("my-cluster", MyClusterProvider)
+```
+
+A session must provide:
 
 ```python
 create_training_actor(...)
@@ -70,7 +131,11 @@ create_sampler_actors(...)
 close()
 ```
 
-The actors or handles must expose the method names used by `TrainingClient` and `SamplingClient`.
+The actors or handles must expose the method names used by `TrainingClient`
+and `SamplingClient` — plain objects, Ray actors (`.remote`), and Modal
+handles (`.remote_async`) all work through `clients/_remote.py`. Study
+`providers/fake.py` for the smallest complete execution provider and
+`providers/planned.py` for plan-only providers that render launch artifacts.
 
 The existing runtime boundary is:
 

@@ -95,6 +95,31 @@ More examples — Tinker tutorials, RL, multi-tenant runs — in the **[quicksta
 
 <br/>
 
+## Local control-plane workflows
+
+The CLI can exercise the full train → checkpoint → eval → export loop without a GPU by using the fake provider:
+
+```bash
+ray-unsloth init ray-unsloth.yaml
+ray-unsloth --config ray-unsloth.yaml doctor
+ray-unsloth --config ray-unsloth.yaml list-providers
+ray-unsloth --config ray-unsloth.yaml plan --provider skypilot --write-artifacts launch/
+ray-unsloth --config ray-unsloth.yaml run --steps 3 --checkpoint-name smoke
+ray-unsloth --config ray-unsloth.yaml runs
+ray-unsloth export checkpoints/.../smoke --target hf --output exported-smoke
+```
+
+Runtime providers are plugin-backed. `local-ray` remains the default, `modal` is optional, `fake` is CI-friendly, and planned providers (`skypilot`, `kuberay`, `slurm`, `runpod`) render launch artifacts for attaching Ray clusters.
+
+Install the UI extra to browse local runs, metrics, checkpoints, evals, providers, config validation, and topology:
+
+```bash
+pip install -e ".[ui]"
+ray-unsloth --config ray-unsloth.yaml serve-ui
+```
+
+<br/>
+
 ## Development
 
 ```bash

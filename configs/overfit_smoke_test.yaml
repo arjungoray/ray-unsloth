@@ -100,5 +100,9 @@ modal:
   python_version: "3.11"
 
 checkpoint_root: /checkpoints
+# checkpoint_root is the remote Modal volume mount; client-side run tracking
+# (metrics, logs, lineage) lives locally instead.
+tracking_root: checkpoints
+run_name: overfit-smoke-modal
 supported_models:
   - lfm2.5-1.2b-instruct

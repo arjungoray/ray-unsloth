@@ -20,6 +20,7 @@ from ray_unsloth.checkpoints import (
 )
 from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
 from ray_unsloth.errors import UnsupportedLossError
+from ray_unsloth.losses import get_loss, validate_datum_inputs
 from ray_unsloth.types import (
     AdamParams,
     CheckpointRef,
@@ -691,10 +692,15 @@ class UnslothEngine:
     ):
         import torch
 
+        spec = get_loss(loss_fn)
+        if spec.kind != "policy_gradient" or spec.token_loss is None:
+            raise UnsupportedLossError(f"Unsupported policy-gradient loss: {loss_fn}")
+        loss_config = spec.merged_config(loss_fn_config)
         batch = plan.batch
         prepared_rows = []
         keep_counts = []
         for row_idx, datum in enumerate(data):
+            validate_datum_inputs(spec, datum.loss_fn_inputs, datum_index=row_idx)
             input_len = plan.row_lengths[row_idx]
             targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][:input_len]
             old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][:input_len]
@@ -725,8 +731,6 @@ class UnslothEngine:
             device=log_probs.device,
         )
         external_ratios = torch.zeros_like(external_logprobs)
-        clip_low = float(loss_fn_config.get("clip_low_threshold", 0.8))
-        clip_high = float(loss_fn_config.get("clip_high_threshold", 1.2))
         model_rows = []
         local_positions = []
         target_tokens = []
@@ -775,16 +779,12 @@ class UnslothEngine:
         output_positions_t = torch.tensor(output_positions, dtype=torch.long, device=log_probs.device)
         external_logprobs[row_indices_t, output_positions_t] = current_logprobs
         external_ratios[row_indices_t, output_positions_t] = ratio
-        if loss_fn == "importance_sampling":
-            token_losses = -ratio * advantages_t
-        elif loss_fn == "ppo":
-            clipped_ratio = ratio.clamp(clip_low, clip_high)
-            token_losses = -torch.minimum(ratio * advantages_t, clipped_ratio * advantages_t)
-        elif loss_fn == "cispo":
-            clipped_ratio = ratio.detach().clamp(clip_low, clip_high)
-            token_losses = -clipped_ratio * advantages_t * current_logprobs
-        else:
-            raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+        token_losses = spec.token_loss(
+            ratio=ratio,
+            advantages=advantages_t,
+            current_logprobs=current_logprobs,
+            config=loss_config,
+        )
         total_loss = token_losses.sum()
 
         return total_loss, outputs, external_logprobs, external_ratios
@@ -838,10 +838,11 @@ class UnslothEngine:
 
         FastLanguageModel.for_inference(self._unwrap_model())
         with torch.no_grad():
-            if loss_fn == "cross_entropy":
+            spec = get_loss(loss_fn)
+            if spec.name == "cross_entropy":
                 loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
                 loss_fn_outputs = self._loss_fn_outputs(row_logprobs)
-            elif loss_fn in {"importance_sampling", "ppo", "cispo"}:
+            elif spec.kind == "policy_gradient":
                 loss, _outputs, row_logprobs, ratios = self._policy_loss(data, loss_fn=loss_fn)
                 loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
             else:
@@ -860,10 +861,11 @@ class UnslothEngine:
 
         FastLanguageModel.for_training(self._unwrap_model())
         self._ensure_optimizer()
-        if loss_fn == "cross_entropy":
+        spec = get_loss(loss_fn)
+        if spec.name == "cross_entropy":
             loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
             loss_fn_outputs = self._loss_fn_outputs(row_logprobs)
-        elif loss_fn in {"importance_sampling", "ppo", "cispo"}:
+        elif spec.kind == "policy_gradient":
             loss, _outputs, row_logprobs, ratios = self._policy_loss(
                 data,
                 loss_fn=loss_fn,
