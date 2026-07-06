@@ -1,0 +1,37 @@
+provider: fake
+checkpoint_root: checkpoints/gallery-01-hello-sft
+tracking: false
+
+model:
+  base_model: Test/Test-1B
+  max_seq_length: 128
+  dtype: bfloat16
+  load_in_4bit: true
+  fast_inference: false
+  gpu_memory_utilization: 0.85
+  trust_remote_code: false
+  attn_implementation: null
+
+lora:
+  rank: 4
+  alpha: 8
+  dropout: 0.0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+  random_state: 3407
+  use_rslora: false
+  bias: none
+  use_gradient_checkpointing: false
+  loftq_config: null
+
+resources:
+  trainer_num_gpus: 0.0
+  trainer_num_cpus: 0.25
+  trainer_replicas: 1
+  sampler_num_gpus: 0.0
+  sampler_num_cpus: 0.25
+  sampler_replicas: 1
+  placement_strategy: PACK

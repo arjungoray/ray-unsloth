@@ -127,7 +127,9 @@ def _ppo_token_loss(*, ratio: Any, advantages: Any, current_logprobs: Any, confi
     import torch
 
     clipped_ratio = ratio.clamp(config["clip_low_threshold"], config["clip_high_threshold"])
-    return -torch.minimum(ratio * advantages, clipped_ratio * advantages)
+    left = torch.as_tensor(ratio * advantages)
+    right = torch.as_tensor(clipped_ratio * advantages)
+    return -torch.minimum(left, right)
 
 
 def _cispo_token_loss(*, ratio: Any, advantages: Any, current_logprobs: Any, config: dict[str, Any]) -> Any:
