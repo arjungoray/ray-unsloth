@@ -412,11 +412,25 @@ def test_restore_raises_on_rank_mismatch(monkeypatch, tmp_path, method_name):
 def test_restore_raises_on_missing_manifest(monkeypatch, tmp_path, method_name):
     monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
     client = ServiceClient(config=RESTORE_CONFIG)
+    manifestless = tmp_path / "manifestless"
+    manifestless.mkdir()
 
     with pytest.raises(CheckpointError):
-        getattr(client, method_name)(str(tmp_path / "missing"))
+        getattr(client, method_name)(str(manifestless))
 
     assert client._session.training_kwargs is None
+
+
+@pytest.mark.parametrize("method_name", RESTORE_METHODS)
+def test_restore_defers_validation_for_remote_paths(monkeypatch, method_name):
+    """A checkpoint path not readable on this machine (e.g. a Modal volume path)
+    skips client-side pre-validation; the engine validates authoritatively."""
+    monkeypatch.setattr(service_module, "RaySession", FakeRuntimeSession)
+    client = ServiceClient(config=RESTORE_CONFIG)
+
+    getattr(client, method_name)("/checkpoints/lives-on-a-remote-volume")
+
+    assert client._session.training_kwargs["model_path"] == "/checkpoints/lives-on-a-remote-volume"
 
 
 def test_restore_rank_override_validates_against_override(monkeypatch, tmp_path):

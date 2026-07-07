@@ -396,9 +396,18 @@ class ServiceClient:
 
         Reads the checkpoint ``manifest.json`` and compares ``base_model``, ``lora.rank``,
         and ``lora.target_modules`` against the active configuration (honoring per-call
-        ``base_model``/``rank`` overrides). Raises :class:`CheckpointError` on a missing or
-        malformed manifest or any mismatch, before any actor is created or weights loaded.
+        ``base_model``/``rank`` overrides). Raises :class:`CheckpointError` on a malformed
+        manifest or any mismatch, before any actor is created or weights loaded.
+
+        Best-effort by design: when the checkpoint path is not readable on this
+        machine (e.g. it lives on a remote provider volume such as Modal's
+        ``/checkpoints``), client-side pre-validation is skipped — the engine
+        re-validates the manifest authoritatively before loading weights.
         """
+        from ray_unsloth.checkpoints import resolve_path
+
+        if not resolve_path(path).exists():
+            return
         manifest = read_manifest(path)
         model_config, lora_config = self.config.resolve_model_configs(base_model)
         expected_rank = rank if rank is not None else lora_config.rank
