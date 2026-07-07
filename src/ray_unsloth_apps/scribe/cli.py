@@ -49,6 +49,15 @@ def build_cli(subparsers: argparse._SubParsersAction[Any]) -> None:
     pipeline.add_argument("--workdir", default="./scribe/")
     pipeline.set_defaults(func=cmd_pipeline)
 
+    rewrite = subparsers.add_parser("rewrite", help="Rewrite pasted text in the trained voice.")
+    rewrite.add_argument("--text", help="Text to rewrite (or use --file / stdin).")
+    rewrite.add_argument("--file", help="Read the text to rewrite from a file.")
+    rewrite.add_argument("--checkpoint", help="Checkpoint path (default: latest trained checkpoint).")
+    rewrite.add_argument("--max-tokens", type=int, default=280)
+    rewrite.add_argument("--temperature", type=float, default=0.7)
+    rewrite.add_argument("--samples", type=int, default=1, help="Number of candidate rewrites.")
+    rewrite.set_defaults(func=cmd_rewrite)
+
     mirror = subparsers.add_parser(
         "mirror", help="Terminal game that compares a held-out passage against a generation."
     )
@@ -115,6 +124,49 @@ def cmd_export(args: argparse.Namespace) -> int:
         raise ValueError("No completed Scribe checkpoint found.")
     report = stage_export(checkpoint, target=args.target, runtime=runtime, workdir=args.workdir)
     print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_rewrite(args: argparse.Namespace) -> int:
+    import sys as _sys
+
+    from ray_unsloth import SamplingParams, ServiceClient
+    from ray_unsloth.types import ModelInput
+    from ray_unsloth_apps.scribe.rewrite import rewrite_prompt
+
+    if args.text:
+        source = args.text
+    elif args.file:
+        source = Path(args.file).read_text(encoding="utf-8")
+    else:
+        source = _sys.stdin.read()
+    source = source.strip()
+    if not source:
+        raise ValueError("Nothing to rewrite: pass --text, --file, or pipe text on stdin.")
+
+    runtime = load_config(args.config) if getattr(args, "config", None) else load_config(None)
+    checkpoint = args.checkpoint or _latest_checkpoint(runtime)
+    if checkpoint is None:
+        raise ValueError("No trained Scribe checkpoint found. Run `ray-unsloth scribe pipeline` first.")
+
+    service = ServiceClient(config=runtime)
+    try:
+        sampler = service.create_sampling_client(model_path=checkpoint)
+        tokenizer = sampler.get_tokenizer().result()
+        prompt = rewrite_prompt(source)
+        encoded = tokenizer(prompt, add_special_tokens=True)
+        tokens = encoded["input_ids"] if isinstance(encoded, dict) else encoded
+        response = sampler.sample(
+            ModelInput.from_ints(list(tokens)),
+            num_samples=max(1, args.samples),
+            sampling_params=SamplingParams(max_tokens=args.max_tokens, temperature=args.temperature, top_p=0.95),
+        ).result()
+        for index, sequence in enumerate(response.sequences, start=1):
+            if len(response.sequences) > 1:
+                print(f"--- candidate {index} ---")
+            print((sequence.text or "").strip())
+    finally:
+        service.close()
     return 0
 
 

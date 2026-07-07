@@ -16,7 +16,16 @@ from ray_unsloth_apps.scribe.classifier import auc as classifier_auc
 from ray_unsloth_apps.scribe.classifier import train_classifier
 from ray_unsloth_apps.scribe.ingest import Passage, ingest_paths, scrub
 from ray_unsloth_apps.scribe.pipeline import run_pipeline
-from ray_unsloth_apps.scribe.profile import build_profile, copy_overlap, stylometrics, stylometry_distance
+from ray_unsloth_apps.scribe.profile import (
+    FEATURE_GROUPS,
+    build_profile,
+    copy_overlap,
+    fingerprint_card,
+    load_profile,
+    save_profile,
+    stylometrics,
+    stylometry_distance,
+)
 from ray_unsloth_apps.scribe.prompts import backtranslate_prompts
 
 
@@ -99,6 +108,65 @@ def test_profile_stylometrics_deterministic_and_distance_orders_texts():
     assert stylometrics(text) == stylometrics(text)
     assert stylometry_distance(text, profile) < stylometry_distance(shuffled, profile)
     assert copy_overlap(text, profile) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_profile_readability_and_passive_proxy_features():
+    short_text = "Run. Use. Fix."
+    academic_text = (
+        "In contemporary technical writing, the articulation of an idea often depends on extended "
+        "subordinate clauses, layered qualifiers, and a sustained reliance on abstract terminology."
+    )
+
+    short_metrics = stylometrics(short_text)
+    academic_metrics = stylometrics(academic_text)
+
+    assert short_metrics["readability_flesch_ease"] > academic_metrics["readability_flesch_ease"]
+    assert (
+        stylometrics("The bug was fixed by the team.")["register_passive_proxy"]
+        > stylometrics("We fixed the bug.")["register_passive_proxy"]
+    )
+
+
+def test_profile_fingerprint_card_is_deterministic_and_descriptive():
+    profile = build_profile(
+        [
+            "short direct note with a bit of edge.",
+            "we keep it quick and conversational, with a light aside.",
+            "however, the point stays clear and concrete.",
+            "and the rhythm shifts a little from line to line.",
+            "use examples, then move on.",
+        ]
+    )
+
+    card = fingerprint_card(profile)
+
+    assert card == fingerprint_card(profile)
+    assert card.strip()
+    assert any(group in card.lower() for group in FEATURE_GROUPS)
+    assert "overall:" in card.lower()
+
+
+def test_profile_round_trip_fills_missing_new_feature_keys(tmp_path: Path):
+    profile = build_profile(
+        [
+            "short direct note with a bit of edge.",
+            "we keep it quick and conversational, with a light aside.",
+            "however, the point stays clear and concrete.",
+            "and the rhythm shifts a little from line to line.",
+            "use examples, then move on.",
+        ]
+    )
+    missing_feature = "readability_flesch_ease"
+    profile.features_mean.pop(missing_feature)
+    profile.features_std.pop(missing_feature)
+
+    profile_path = tmp_path / "scribe-profile.json"
+    save_profile(profile, profile_path)
+    loaded = load_profile(profile_path)
+
+    assert missing_feature in loaded.features_mean
+    assert missing_feature in loaded.features_std
+    assert math.isfinite(stylometry_distance("We fixed the bug.", loaded))
 
 
 def test_classifier_separates_synthetic_styles():

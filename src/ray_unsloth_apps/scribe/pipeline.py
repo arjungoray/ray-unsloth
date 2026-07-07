@@ -36,6 +36,16 @@ from ray_unsloth_apps.scribe.prompts import (
     save_prompts,
     task_bank,
 )
+from ray_unsloth_apps.scribe.rewrite import (
+    RewritePair,
+    content_jaccard,
+    length_ratio_score,
+    load_pairs,
+    neutralize_passages,
+    rewrite_prompt,
+    rule_based_neutralize,
+    save_pairs,
+)
 
 
 @dataclass(slots=True)
@@ -86,22 +96,34 @@ def stage_eval(
     if not heldout:
         heldout = list(passages[:1])
     sampling_client = service.create_sampling_client(model_path=checkpoint)
-    bank_prompt_specs = _bank_prompt_specs(
-        [{"text": text, "source": "bank"} for text in task_bank()], sampling_client.get_tokenizer().result()
-    )
+    tokenizer = sampling_client.get_tokenizer().result()
+    # Evaluate the product task: rewrite unseen neutral text into the voice.
+    sources = [rule_based_neutralize(passage.text) for passage in heldout] + list(NEUTRAL_PARAGRAPHS)
+    sources = [source for source in sources if source.strip()][: max(1, config.eval_generations)]
+    eval_specs = [
+        PromptSpec(
+            prompt_text=rewrite_prompt(source),
+            prompt_tokens=_encode_prompt(tokenizer, rewrite_prompt(source)),
+            context={"source_text": source},
+        )
+        for source in sources
+    ]
     generations = _generate_samples(
         sampling_client,
-        bank_prompt_specs,
+        eval_specs,
         max_samples=config.eval_generations,
         max_tokens=config.max_tokens,
         seed=config.seed,
     )
+    paired = list(zip(sources, generations, strict=False))
     report = {
         "checkpoint": checkpoint,
         "app": "scribe",
         "stage": "eval",
+        "task": "rewrite",
         "auc": classifier_auc([passage.text for passage in heldout], generations),
         "stylometry_mean": _mean(stylometry_distance(text, profile) for text in generations),
+        "content_mean": _mean(content_jaccard(source, text) for source, text in paired),
         "fluency_mean": _mean(_fluency_score(sampling_client, text) for text in generations),
         "n": len(generations),
         "heldout_n": len(heldout),
@@ -207,12 +229,20 @@ def run_pipeline(
         prompts = _load_or_build_prompts(prompts_path, service, passages, config)
         summary["prompts"] = {"path": str(prompts_path), "n_prompts": len(prompts)}
 
+        pairs_path = workdir_path / "pairs.jsonl"
+        pairs = _load_or_build_pairs(pairs_path, service, passages, config)
+        summary["pairs"] = {
+            "path": str(pairs_path),
+            "n_pairs": len(pairs),
+            "n_model": sum(1 for pair in pairs if pair.method == "model"),
+        }
+
         checkpoint = _latest_checkpoint_for_stage(store, "rl") or _latest_checkpoint_for_stage(store, "sft")
 
         if _should_run(steps, "sft"):
             sft_run = _latest_run_for_stage(store, "sft")
             if sft_run is None:
-                sft_report = _stage_sft_details(service, passages, prompts, config)
+                sft_report = _stage_sft_details(service, passages, prompts, config, pairs=pairs)
                 summary["sft"] = sft_report
                 checkpoint = sft_report["checkpoint"]
             else:
@@ -226,7 +256,7 @@ def run_pipeline(
                 start_checkpoint = checkpoint
                 if start_checkpoint is None:
                     raise ValueError("Scribe RL requires an SFT checkpoint.")
-                rl_report = _stage_rl_details(service, start_checkpoint, prompts, profile, config)
+                rl_report = _stage_rl_details(service, start_checkpoint, prompts, profile, config, pairs=pairs)
                 summary["rl"] = rl_report
                 checkpoint = rl_report["checkpoint"]
             else:
@@ -247,13 +277,17 @@ def run_pipeline(
 
 
 def _stage_sft_details(
-    service: Any, passages: list[Passage], prompts: list[dict[str, Any]], config: ScribeConfig
+    service: Any,
+    passages: list[Passage],
+    prompts: list[dict[str, Any]],
+    config: ScribeConfig,
+    pairs: list[RewritePair] | None = None,
 ) -> dict[str, Any]:
     store = RunStore(_store_root(service))
     metadata = {"app": "scribe", "stage": "sft", "round": 0}
     with _managed_training_client(service, name=f"{config.run_name}-sft", metadata=metadata) as training:
         tokenizer = training.get_tokenizer().result()
-        datums = _build_sft_datums(passages, prompts, config, tokenizer=tokenizer)
+        datums = _build_sft_datums(passages, prompts, config, tokenizer=tokenizer, pairs=pairs)
         if not datums:
             raise ValueError("Scribe SFT requires at least one datum.")
         rng = random.Random(config.seed)
@@ -308,12 +342,16 @@ def _stage_rl_details(
     prompts: list[dict[str, Any]],
     profile: StyleProfile,
     config: ScribeConfig,
+    pairs: list[RewritePair] | None = None,
 ) -> dict[str, Any]:
     store = RunStore(_store_root(service))
     prompt_tokenizer = service.create_sampling_client(model_path=sft_checkpoint).get_tokenizer().result()
-    prompt_specs = _bank_prompt_specs(prompts, prompt_tokenizer)
+    if pairs:
+        prompt_specs = _rewrite_prompt_specs(pairs, prompt_tokenizer)
+    else:
+        prompt_specs = _bank_prompt_specs(prompts, prompt_tokenizer)
     if not prompt_specs:
-        raise ValueError("Scribe RL requires at least one bank prompt.")
+        raise ValueError("Scribe RL requires at least one rewrite source or bank prompt.")
 
     checkpoint = sft_checkpoint
     rounds: list[dict[str, Any]] = []
@@ -375,6 +413,7 @@ def _build_sft_datums(
     config: ScribeConfig,
     *,
     tokenizer: Any | None = None,
+    pairs: list[RewritePair] | None = None,
 ) -> list[Datum]:
     if not passages:
         return []
@@ -382,11 +421,25 @@ def _build_sft_datums(
     # only "works" on the fake engine — on a real model it trains on garbage
     # token ids (the run-2 postmortem bug).
     tokenizer = tokenizer if tokenizer is not None else _byte_tokenizer()
+    datums: list[Datum] = []
+    if pairs:
+        # The product task: rewrite arbitrary text into the author's voice.
+        # Pairs are (neutralized source -> original passage); the identical
+        # rewrite_prompt template is used at inference time.
+        for pair in pairs:
+            datums.append(text_completion_datum(tokenizer, rewrite_prompt(pair.source), pair.target))
+        # ~20% plain continuation for voice texture beyond the rewrite frame.
+        texture = passages[:: max(1, len(passages) // max(1, len(pairs) // 5))][: max(1, len(pairs) // 5)]
+        for passage in texture:
+            tokens = _encode_prompt(tokenizer, passage.text)
+            if len(tokens) >= 2:
+                datums.append(Datum(model_input=ModelInput.from_ints(tokens), loss_fn_inputs={"labels": tokens}))
+        return datums
+    # Legacy draft-style mixture (no pairs available).
     prompt_texts = [str(row.get("text", "")).strip() for row in prompts if str(row.get("text", "")).strip()]
     if not prompt_texts:
         prompt_texts = [passage.text for passage in passages]
     split = max(1, round(len(passages) * 0.7))
-    datums: list[Datum] = []
     for index, passage in enumerate(passages[:split]):
         prompt = prompt_texts[index % len(prompt_texts)]
         datums.append(text_completion_datum(tokenizer, prompt.rstrip() + "\n\n", passage.text))
@@ -458,26 +511,76 @@ def _build_rubric(
             return float(config.fluency_fn(live_policy, completion_text))
         return _fluency_score(live_policy, completion_text)
 
-    def task(*, prompt: str, completion_text: str, **_: Any) -> float:
-        requested = _parse_requested_words(prompt)
-        words = len(completion_text.split())
-        low = max(1, int(requested * 0.4))
-        high = max(low, int(requested * 1.6))
+    def content(*, prompt: str, completion_text: str, context: dict[str, Any] | None = None, **_: Any) -> float:
+        source_text = (context or {}).get("source_text", "")
         banned = any(phrase in completion_text.lower() for phrase in ("as an ai", "here is", "here's a"))
-        return 0.0 if banned else (1.0 if low <= words <= high else 0.0)
+        if banned:
+            return 0.0
+        if not source_text:
+            return 0.5  # no reference: neutral contribution
+        return content_jaccard(source_text, completion_text)
+
+    def length(*, completion_text: str, context: dict[str, Any] | None = None, **_: Any) -> float:
+        source_text = (context or {}).get("source_text", "")
+        if not source_text:
+            return 0.5
+        return length_ratio_score(source_text, completion_text)
 
     def anti_copy(*, completion_text: str, **_: Any) -> float:
         return 1.0 - copy_overlap(completion_text, profile)
 
     return Rubric(
         terms=[
-            RubricTerm(name="style_clf", fn=style_clf, weight=0.35, z_normalize=False),
-            RubricTerm(name="stylometry", fn=stylometry, weight=0.25, z_normalize=False),
-            RubricTerm(name="fluency", fn=fluency, weight=0.15, z_normalize=False),
-            RubricTerm(name="task", fn=task, weight=0.15, z_normalize=False),
+            RubricTerm(name="style_clf", fn=style_clf, weight=0.30, z_normalize=False),
+            RubricTerm(name="stylometry", fn=stylometry, weight=0.20, z_normalize=False),
+            # Content preservation is the anti-gaming keystone for rewriting:
+            # style terms alone reward ignoring the source entirely.
+            RubricTerm(name="content", fn=content, weight=0.25, z_normalize=False),
+            RubricTerm(name="fluency", fn=fluency, weight=0.10, z_normalize=False),
+            RubricTerm(name="length", fn=length, weight=0.05, z_normalize=False),
             RubricTerm(name="anti_copy", fn=anti_copy, weight=0.10, z_normalize=False, override_below=0.5),
         ]
     )
+
+
+def _rewrite_prompt_specs(pairs: list[RewritePair], tokenizer: Any) -> list[PromptSpec]:
+    """RL rollout prompts: rewrite neutral sources (pair sources + stock neutrals)."""
+    sources = [pair.source for pair in pairs] + list(NEUTRAL_PARAGRAPHS)
+    specs: list[PromptSpec] = []
+    seen: set[str] = set()
+    for source in sources:
+        source = source.strip()
+        if not source or source in seen:
+            continue
+        seen.add(source)
+        prompt_text = rewrite_prompt(source)
+        specs.append(
+            PromptSpec(
+                prompt_text=prompt_text,
+                prompt_tokens=_encode_prompt(tokenizer, prompt_text),
+                context={"source_text": source},
+            )
+        )
+    return specs
+
+
+def _load_or_build_pairs(
+    pairs_path: Path, service: Any, passages: list[Passage], config: ScribeConfig
+) -> list[RewritePair]:
+    existing = load_pairs(pairs_path)
+    if existing:
+        return existing
+    sampler = service.create_sampling_client(base_model=_runtime_model_base(service))
+    pairs = neutralize_passages(
+        sampler,
+        passages,
+        get_renderer("plain"),
+        per_passage=2,
+        max_tokens=min(320, config.max_tokens * 3),
+        seed=config.seed,
+    )
+    save_pairs(pairs_path, pairs)
+    return pairs
 
 
 def _bank_prompt_specs(prompts: list[dict[str, Any]], tokenizer: Any) -> list[PromptSpec]:
