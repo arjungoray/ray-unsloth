@@ -235,7 +235,7 @@ def neutralize_passages(
     for index, passage in enumerate(passages):
         text = passage.text if hasattr(passage, "text") else str(passage)
         got_model_pair = False
-        for attempt in range(max(1, per_passage)):
+        for attempt in range(max(2, per_passage + 1)):
             prompt_input = renderer.build_generation_prompt(
                 tokenizer,
                 [{"role": "user", "content": neutralize_prompt(text)}],
@@ -251,28 +251,59 @@ def neutralize_passages(
             ).result()
             candidate = ""
             if generation.sequences:
-                candidate = str(generation.sequences[0].text or "").strip()
+                candidate = clean_generation(str(generation.sequences[0].text or ""))
             if _acceptable_neutralization(candidate, text) and candidate not in seen_sources:
                 seen_sources.add(candidate)
                 pairs.append(RewritePair(source=candidate, target=text, method="model"))
                 got_model_pair = True
         if not got_model_pair:
             fallback = rule_based_neutralize(text)
-            if fallback and fallback not in seen_sources:
+            # A fallback that still shares a long verbatim run with the target
+            # would teach the identity mapping (the run-4 postmortem bug):
+            # drop the passage instead of training copy-through.
+            if fallback and fallback not in seen_sources and not _shares_verbatim_run(fallback, text):
                 seen_sources.add(fallback)
                 pairs.append(RewritePair(source=fallback, target=text, method="rule"))
     return pairs
 
 
+_CHATTY_PREFIXES = (
+    "plain paraphrase:",
+    "paraphrase:",
+    "here is",
+    "here's",
+    "sure,",
+    "sure!",
+    "certainly",
+)
+
+
+def clean_generation(candidate: str) -> str:
+    """Strip chat-model wrapper junk so the paraphrase itself is the source."""
+    cleaned = candidate.strip().strip('"').strip()
+    lowered = cleaned.lower()
+    for prefix in _CHATTY_PREFIXES:
+        if lowered.startswith(prefix):
+            cleaned = cleaned[len(prefix) :].lstrip(" :\n")
+            lowered = cleaned.lower()
+    return cleaned.strip()
+
+
 def _acceptable_neutralization(candidate: str, original: str) -> bool:
     if len(candidate) < 40 or not re.search(r"[A-Za-z]{3}", candidate):
         return False
-    jaccard = content_jaccard(candidate, original)
-    if jaccard < 0.25 or jaccard > 0.9:
+    # Content must be preserved. NOTE: no upper bound — a faithful paraphrase
+    # legitimately keeps most content words; identity is caught by the
+    # verbatim-run check below, not by vocabulary overlap.
+    if content_jaccard(candidate, original) < 0.22:
         return False
-    # Reject wholesale copying: any shared verbatim 12-word run.
-    original_runs = _word_runs(original, 12)
-    return not any(run in original_runs for run in _word_runs(candidate, 12))
+    return not _shares_verbatim_run(candidate, original)
+
+
+def _shares_verbatim_run(candidate: str, original: str, n: int = 12) -> bool:
+    """True when the two texts share any verbatim n-word run (identity signal)."""
+    original_runs = _word_runs(original, n)
+    return any(run in original_runs for run in _word_runs(candidate, n))
 
 
 def _word_runs(text: str, n: int) -> set[str]:

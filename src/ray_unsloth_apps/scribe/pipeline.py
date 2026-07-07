@@ -574,7 +574,7 @@ def _load_or_build_pairs(
     pairs = neutralize_passages(
         sampler,
         passages,
-        get_renderer("plain"),
+        get_renderer("chat_template"),
         per_passage=2,
         max_tokens=min(320, config.max_tokens * 3),
         seed=config.seed,
