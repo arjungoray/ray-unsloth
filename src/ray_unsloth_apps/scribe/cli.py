@@ -113,7 +113,7 @@ def cmd_export(args: argparse.Namespace) -> int:
     checkpoint = _latest_checkpoint(runtime)
     if checkpoint is None:
         raise ValueError("No completed Scribe checkpoint found.")
-    report = stage_export(checkpoint, target=args.target)
+    report = stage_export(checkpoint, target=args.target, runtime=runtime, workdir=args.workdir)
     print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     return 0
 

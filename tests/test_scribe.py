@@ -32,6 +32,10 @@ def _scribe_config(tmp_path: Path, **scribe_overrides):
         "eval_generations": 40,
         "run_name": "scribe",
         "seed": 7,
+        # The fake engine's table SGD needs far larger steps than real LoRA
+        # training; production defaults are 2e-4 / 1e-5.
+        "sft_learning_rate": 0.02,
+        "rl_learning_rate": 1e-5,
     }
     scribe.update(scribe_overrides)
     return {

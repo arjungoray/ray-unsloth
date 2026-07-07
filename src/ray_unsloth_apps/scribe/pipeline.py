@@ -49,6 +49,10 @@ class ScribeConfig:
     max_prompts: int = 24
     eval_generations: int = 40
     seed: int = 0
+    # Engine-appropriate defaults; the fake provider's tests override these
+    # (its table SGD needs far larger steps than real LoRA training).
+    sft_learning_rate: float = 2e-4
+    rl_learning_rate: float = 1e-5
     run_name: str = "scribe"
     fluency_fn: Callable[[Any, str], float] | None = None
 
@@ -107,7 +111,67 @@ def stage_eval(
     return report
 
 
-def stage_export(checkpoint: str, target: str = "ollama") -> ExportReport:
+def materialize_checkpoint(checkpoint: str, runtime: RuntimeConfig, workdir: str | Path) -> str:
+    """Return a locally readable copy of ``checkpoint``.
+
+    Exporters read manifests and weights from the local filesystem. When the
+    checkpoint lives on a remote provider volume (Modal's ``/checkpoints``
+    mount), pull it down with ``modal volume get`` into the workdir first.
+    """
+    import subprocess
+
+    from ray_unsloth.checkpoints import resolve_path
+    from ray_unsloth.errors import CheckpointError
+
+    if resolve_path(checkpoint).exists():
+        return checkpoint
+    mount = runtime.modal.volume_mount_path.rstrip("/")
+    raw = str(checkpoint)
+    if raw.startswith(mount + "/"):
+        relpath = raw[len(mount) + 1 :]
+    elif raw.startswith("/__modal/volumes/"):
+        # The engine records the container-resolved volume path
+        # (/__modal/volumes/<volume-id>/<relpath>), not the mount alias.
+        relpath = raw.removeprefix("/__modal/volumes/").split("/", 1)[1]
+    else:
+        raise CheckpointError(
+            f"Checkpoint is not readable locally and is not under the Modal volume mount: {raw}",
+            code="RU-2001",
+            hint="Download the checkpoint to this machine before exporting.",
+        )
+    dest = Path(workdir).expanduser() / "export-src" / relpath
+    if not (dest / "manifest.json").exists():
+        import shutil
+
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # `modal volume get` uses cp -r semantics for directories: the local
+        # destination is the PARENT, and the directory is created inside it.
+        result = subprocess.run(
+            ["modal", "volume", "get", "--force", runtime.modal.volume_name, relpath, str(dest.parent)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not (dest / "manifest.json").exists():
+            detail = result.stderr.strip()[-500:] or "download completed but manifest.json is missing"
+            raise CheckpointError(
+                f"Could not download checkpoint '{relpath}' from Modal volume '{runtime.modal.volume_name}': {detail}",
+                code="RU-2001",
+                hint="Check `modal profile current` and the volume name in your config.",
+            )
+    return str(dest)
+
+
+def stage_export(
+    checkpoint: str,
+    target: str = "ollama",
+    *,
+    runtime: RuntimeConfig | None = None,
+    workdir: str | Path = "scribe",
+) -> ExportReport:
+    if runtime is not None:
+        checkpoint = materialize_checkpoint(checkpoint, runtime, workdir)
     return export_checkpoint(target, checkpoint)
 
 
@@ -173,7 +237,7 @@ def run_pipeline(
             summary["eval"] = stage_eval(service, checkpoint, passages, profile, config)
 
         if _should_run(steps, "export") and checkpoint is not None:
-            export_report = stage_export(checkpoint)
+            export_report = stage_export(checkpoint, runtime=runtime, workdir=workdir_path)
             summary["export"] = export_report.to_dict()
 
         print(json.dumps(summary, indent=2, sort_keys=True))
@@ -187,17 +251,18 @@ def _stage_sft_details(
 ) -> dict[str, Any]:
     store = RunStore(_store_root(service))
     metadata = {"app": "scribe", "stage": "sft", "round": 0}
-    datums = _build_sft_datums(passages, prompts, config)
-    if not datums:
-        raise ValueError("Scribe SFT requires at least one datum.")
-    rng = random.Random(config.seed)
-    shuffled = list(datums)
-    rng.shuffle(shuffled)
-    holdout_size = max(1, len(shuffled) // 10)
-    heldout = shuffled[:holdout_size]
-    train = shuffled[holdout_size:] or shuffled
-
     with _managed_training_client(service, name=f"{config.run_name}-sft", metadata=metadata) as training:
+        tokenizer = training.get_tokenizer().result()
+        datums = _build_sft_datums(passages, prompts, config, tokenizer=tokenizer)
+        if not datums:
+            raise ValueError("Scribe SFT requires at least one datum.")
+        rng = random.Random(config.seed)
+        shuffled = list(datums)
+        rng.shuffle(shuffled)
+        holdout_size = max(1, len(shuffled) // 10)
+        heldout = shuffled[:holdout_size]
+        train = shuffled[holdout_size:] or shuffled
+
         before_loss = float(training.forward(heldout).result().loss)
         best_loss = before_loss
         first_checkpoint = training.save_state("scribe-sft").result().path
@@ -207,7 +272,7 @@ def _stage_sft_details(
                 training,
                 train,
                 batch_size=max(1, min(config.sft_batch_size, len(train))),
-                adam_params=AdamParams(learning_rate=0.02),
+                adam_params=AdamParams(learning_rate=config.sft_learning_rate),
                 shuffle_seed=config.seed + epoch,
             )
             after_loss = float(training.forward(heldout).result().loss)
@@ -262,7 +327,7 @@ def _stage_rl_details(
             if training.run_id is not None and hasattr(service, "_store") and service._store is not None:
                 service._store.update_run(training.run_id, name=f"{config.run_name}-rl-{round_no}")
             positives = _positive_texts(prompts)
-            anchor_datums = _anchor_datums(training, config.seed + round_no, size=16)
+            anchor_datums = _anchor_datums(training, config.seed + round_no, size=16, positives=positives)
             rubric = _build_rubric(training, positives, prompt_specs, profile, config, round_no)
             report = grpo_round(
                 training,
@@ -274,7 +339,7 @@ def _stage_rl_details(
                     batches_per_round=config.batches_per_round,
                     inner_epochs=1,
                     loss_fn="importance_sampling",
-                    learning_rate=1e-5,
+                    learning_rate=config.rl_learning_rate,
                     max_tokens=config.max_tokens,
                     seed=config.seed + round_no,
                 ),
@@ -304,20 +369,29 @@ def _stage_rl_details(
     return {"checkpoint": checkpoint, "baseline_auc": baseline["auc"], "rounds": rounds}
 
 
-def _build_sft_datums(passages: list[Passage], prompts: list[dict[str, Any]], config: ScribeConfig) -> list[Datum]:
+def _build_sft_datums(
+    passages: list[Passage],
+    prompts: list[dict[str, Any]],
+    config: ScribeConfig,
+    *,
+    tokenizer: Any | None = None,
+) -> list[Datum]:
     if not passages:
         return []
+    # The MODEL'S tokenizer, always. Building datums with the byte tokenizer
+    # only "works" on the fake engine — on a real model it trains on garbage
+    # token ids (the run-2 postmortem bug).
+    tokenizer = tokenizer if tokenizer is not None else _byte_tokenizer()
     prompt_texts = [str(row.get("text", "")).strip() for row in prompts if str(row.get("text", "")).strip()]
     if not prompt_texts:
         prompt_texts = [passage.text for passage in passages]
     split = max(1, round(len(passages) * 0.7))
     datums: list[Datum] = []
-    tokenizer = _byte_tokenizer()
     for index, passage in enumerate(passages[:split]):
         prompt = prompt_texts[index % len(prompt_texts)]
-        datums.append(text_completion_datum(tokenizer, prompt, passage.text))
+        datums.append(text_completion_datum(tokenizer, prompt.rstrip() + "\n\n", passage.text))
     for passage in passages[split:]:
-        tokens = list(passage.text.encode("utf-8", errors="replace"))
+        tokens = _encode_prompt(tokenizer, passage.text)
         datums.append(Datum(model_input=ModelInput.from_ints(tokens), loss_fn_inputs={"labels": tokens}))
     rng = random.Random(config.seed)
     rng.shuffle(datums)
@@ -460,13 +534,23 @@ def _generate_samples(
     return outputs
 
 
-def _anchor_datums(training: Any, seed: int, *, size: int) -> list[Datum]:
+def _anchor_datums(training: Any, seed: int, *, size: int, positives: list[str] | None = None) -> list[Datum]:
+    """Anchor the policy to the user's own text (plain continuation datums).
+
+    Anchoring to synthetic strings would pull the policy toward junk; the
+    anchor's entire purpose is to keep RL close to the voice SFT learned.
+    """
     tokenizer = training.get_tokenizer().result()
     rng = random.Random(seed)
+    texts = [t for t in (positives or []) if t.strip()]
+    if not texts:
+        return []
+    sample = texts if len(texts) <= size else rng.sample(texts, size)
     datums: list[Datum] = []
-    for _index in range(max(1, size)):
-        text = f"anchor-{rng.randint(0, 1_000_000)}"
-        tokens = _encode_prompt(tokenizer, text)
+    for passage_text in sample:
+        tokens = _encode_prompt(tokenizer, passage_text)
+        if len(tokens) < 2:
+            continue
         datums.append(Datum(model_input=ModelInput.from_ints(tokens), loss_fn_inputs={"labels": tokens}))
     return datums
 
