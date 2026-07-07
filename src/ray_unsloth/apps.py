@@ -71,5 +71,5 @@ def app_install_status(manifest: AppManifest) -> dict[str, Any]:
     }
 
 
-if "scribe" not in _registry:
-    _registry.register_lazy("scribe", "ray_unsloth_apps.scribe:MANIFEST", description="Personal writing-voice app")
+# Apps register via the ray_unsloth.plugins entry-point group (see the
+# scribe repo for the reference implementation: github.com/arjungoray/scribe).
