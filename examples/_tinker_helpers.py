@@ -78,7 +78,7 @@ def decode_tokens(tokenizer: Any, tokens: list[int]) -> str:
 
 def common_prefix_length(left: Sequence[int], right: Sequence[int]) -> int:
     count = 0
-    for left_token, right_token in zip(left, right):
+    for left_token, right_token in zip(left, right, strict=False):
         if left_token != right_token:
             break
         count += 1
@@ -178,10 +178,7 @@ def build_policy_datum(
 
 def policy_loss_summary(loss_fn_outputs: list[dict[str, TensorData]]) -> tuple[float, float]:
     logprob_values = [
-        float(value)
-        for output in loss_fn_outputs
-        for value in output["logprobs"].tolist()
-        if float(value) != 0.0
+        float(value) for output in loss_fn_outputs for value in output["logprobs"].tolist() if float(value) != 0.0
     ]
     ratio_values = [
         float(value)

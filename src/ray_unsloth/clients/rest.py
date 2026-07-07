@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from ray_unsloth.checkpoints import MANIFEST_NAME, read_manifest, resolve_path, write_manifest

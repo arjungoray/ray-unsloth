@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ray_unsloth.errors import CheckpointError
-from ray_unsloth.types import CheckpointRef
+from ray_unsloth.types.checkpoints import CheckpointRef
 
 MANIFEST_NAME = "manifest.json"
 
@@ -48,19 +48,32 @@ def write_manifest(path: str | Path, manifest: dict[str, Any]) -> None:
 def read_manifest(path: str | Path) -> dict[str, Any]:
     checkpoint_dir = resolve_path(path)
     if not checkpoint_dir.exists():
-        raise CheckpointError(f"Checkpoint path does not exist: {checkpoint_dir}")
+        raise CheckpointError(
+            f"Checkpoint path does not exist: {checkpoint_dir}",
+            code="RU-2001",
+            hint="Verify the checkpoint path or run a save command first.",
+        )
     manifest_path = checkpoint_dir / MANIFEST_NAME
     if not manifest_path.exists():
-        raise CheckpointError(f"Missing checkpoint manifest: {manifest_path}")
+        raise CheckpointError(
+            f"Missing checkpoint manifest: {manifest_path}",
+            code="RU-2002",
+            hint="Use a checkpoint directory that contains manifest.json.",
+        )
     try:
         with manifest_path.open("r", encoding="utf-8") as handle:
             manifest = json.load(handle)
     except json.JSONDecodeError as exc:
-        raise CheckpointError(f"Malformed checkpoint manifest at {manifest_path}: {exc}") from exc
+        raise CheckpointError(
+            f"Malformed checkpoint manifest at {manifest_path}: {exc}",
+            code="RU-2003",
+            hint="Recreate the checkpoint or inspect manifest.json for corruption.",
+        ) from exc
     if not isinstance(manifest, dict):
         raise CheckpointError(
-            f"Malformed checkpoint manifest at {manifest_path}: expected a JSON object, "
-            f"got {type(manifest).__name__}."
+            f"Malformed checkpoint manifest at {manifest_path}: expected a JSON object, got {type(manifest).__name__}.",
+            code="RU-2004",
+            hint="manifest.json must be a JSON object.",
         )
     return manifest
 
@@ -147,8 +160,9 @@ def validate_restore_manifest(
 
     if not isinstance(manifest, dict):
         raise CheckpointError(
-            f"Malformed checkpoint manifest for '{path}': expected a JSON object, "
-            f"got {type(manifest).__name__}."
+            f"Malformed checkpoint manifest for '{path}': expected a JSON object, got {type(manifest).__name__}.",
+            code="RU-2004",
+            hint="manifest.json must be a JSON object.",
         )
 
     manifest_base_model = manifest.get("base_model")
@@ -157,7 +171,9 @@ def validate_restore_manifest(
             f"base_model mismatch for checkpoint '{path}': active config base_model is "
             f"'{base_model}', but the checkpoint manifest was saved from base_model "
             f"'{manifest_base_model}'. Restore with base_model matching the checkpoint manifest "
-            "or load a checkpoint saved from the active base_model."
+            "or load a checkpoint saved from the active base_model.",
+            code="RU-2005",
+            hint="Restore with the same base_model that produced the checkpoint.",
         )
 
     manifest_lora = manifest.get("lora")
@@ -166,7 +182,9 @@ def validate_restore_manifest(
     if not isinstance(manifest_lora, dict):
         raise CheckpointError(
             f"Malformed checkpoint manifest for '{path}': field 'lora' must be a JSON object, "
-            f"got {type(manifest_lora).__name__}."
+            f"got {type(manifest_lora).__name__}.",
+            code="RU-2004",
+            hint="The lora section in manifest.json must be a JSON object.",
         )
 
     manifest_rank = manifest_lora.get("rank")
@@ -174,7 +192,9 @@ def validate_restore_manifest(
         raise CheckpointError(
             f"lora.rank mismatch for checkpoint '{path}': active config lora.rank is {lora_rank}, "
             f"but the checkpoint manifest was saved with rank {manifest_rank}. Set lora.rank to the "
-            "checkpoint rank or load weights saved with the configured rank."
+            "checkpoint rank or load weights saved with the configured rank.",
+            code="RU-2006",
+            hint="Match lora.rank to the checkpoint you are restoring.",
         )
 
     if target_modules is not None:
@@ -184,5 +204,7 @@ def validate_restore_manifest(
                 f"lora.target_modules mismatch for checkpoint '{path}': active config "
                 f"lora.target_modules is {list(target_modules)!r}, but the checkpoint manifest was "
                 f"saved with {list(manifest_target_modules)!r}. Set lora.target_modules to match the "
-                "checkpoint or load weights saved for the configured target modules."
+                "checkpoint or load weights saved for the configured target modules.",
+                code="RU-2007",
+                hint="Match lora.target_modules to the checkpoint you are restoring.",
             )

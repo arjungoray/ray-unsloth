@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
-from dataclasses import replace
 from typing import Any
 
 from ray_unsloth.config import LoRAConfig, ModelConfig, RuntimeConfig
 from ray_unsloth.errors import RayUnavailableError
+from ray_unsloth.runtime._resolve import resolve_actor_configs
 from ray_unsloth.runtime.ray.distributed_trainer import (
     DistributedTrainerCoordinatorActor,
     DistributedTrainerWorkerActor,
@@ -34,7 +35,11 @@ class RaySession:
         try:
             import ray
         except ImportError as exc:
-            raise RayUnavailableError("Ray is required for ServiceClient runtime operations.") from exc
+            raise RayUnavailableError(
+                "Ray is required for ServiceClient runtime operations.",
+                code="RU-3003",
+                hint="Install ray or switch to the fake provider for local development.",
+            ) from exc
         if not ray.is_initialized():
             ray.init(
                 address=self.config.ray.address,
@@ -154,13 +159,13 @@ class RaySession:
             options["scheduling_strategy"] = strategy
         actor = TrainerActor.options(**options).remote(
             session_id=session_id,
-                model_config=model_config,
-                lora_config=lora_config,
-                checkpoint_root=self.config.checkpoint_root,
-                speed_config=self.config.speed,
-                model_path=model_path,
-                with_optimizer=with_optimizer,
-                metadata=metadata or {},
+            model_config=model_config,
+            lora_config=lora_config,
+            checkpoint_root=self.config.checkpoint_root,
+            speed_config=self.config.speed,
+            model_path=model_path,
+            with_optimizer=with_optimizer,
+            metadata=metadata or {},
         )
         self.training_actors[session_id] = actor
         if not hasattr(self, "_owned_actors"):
@@ -281,10 +286,8 @@ class RaySession:
             from ray.util.placement_group import remove_placement_group
 
             for group in list(getattr(self, "_placement_groups", {}).values()):
-                try:
+                with contextlib.suppress(Exception):
                     remove_placement_group(group)
-                except Exception:
-                    pass
         except Exception:
             pass
         if hasattr(self, "training_actors"):
@@ -297,7 +300,7 @@ class RaySession:
             self._placement_groups.clear()
 
     def _model_config(self, base_model: str | None) -> ModelConfig:
-        model_config, _lora_config = self.config.resolve_model_configs(base_model)
+        model_config, _lora_config = resolve_actor_configs(self.config, base_model=base_model)
         return model_config
 
     def _lora_config(
@@ -308,14 +311,11 @@ class RaySession:
         seed: int | None = None,
         target_modules: list[str] | None = None,
     ) -> LoRAConfig:
-        _model_config, lora_config = self.config.resolve_model_configs(base_model)
-        updates: dict[str, Any] = {}
-        if rank is not None:
-            updates["rank"] = rank
-        if seed is not None:
-            updates["random_state"] = seed
-        if target_modules is not None:
-            updates["target_modules"] = target_modules
-        if not updates:
-            return lora_config
-        return replace(lora_config, **updates)
+        _model_config, lora_config = resolve_actor_configs(
+            self.config,
+            base_model=base_model,
+            lora_rank=rank,
+            seed=seed,
+            target_modules=target_modules,
+        )
+        return lora_config

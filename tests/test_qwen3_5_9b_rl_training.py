@@ -9,7 +9,6 @@ from ray_unsloth.clients.sampling import SamplingClient
 from ray_unsloth.config import RuntimeConfig
 from ray_unsloth.types import GeneratedSequence, SampleResponse, SamplingParams
 
-
 EXAMPLE_PATH = Path(__file__).parents[1] / "examples" / "qwen3_5_9b_rl_training.py"
 CONFIG_PATH = Path(__file__).parents[1] / "configs" / "qwen3_5_9b_2x_l4_sharded.yaml"
 SPEC = importlib.util.spec_from_file_location("qwen3_5_9b_rl_training", EXAMPLE_PATH)
@@ -27,7 +26,7 @@ def test_qwen3_5_9b_rl_example_is_valid_python():
 def test_qwen3_5_9b_rl_example_uses_sharded_config_defaults():
     source = EXAMPLE_PATH.read_text(encoding="utf-8")
 
-    assert "BASE_MODEL = \"qwen3.5-9b-instruct\"" in source
+    assert 'BASE_MODEL = "qwen3.5-9b-instruct"' in source
     assert "MIN_TRAIN_DATUMS = 1" in source
     assert "configs/qwen3_5_9b_2x_l4_sharded.yaml" in source
     assert "ServiceClient(config=args.config)" in source
@@ -115,6 +114,7 @@ def test_qwen3_5_9b_rollout_uses_absolute_advantages_for_degenerate_bad_groups(m
         "build_generation_prompt",
         lambda tokenizer, problem: ModelInput.from_ints([101, 102]),
     )
+
     class BadSamplingClient:
         async def sample_async(self, prompt, num_samples, sampling_params):
             del prompt, num_samples, sampling_params

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from ray_unsloth.errors import ConfigurationError
 
 DEFAULT_LORA_TARGET_MODULES = [
     "q_proj",
@@ -22,6 +24,8 @@ DEFAULT_LORA_TARGET_MODULES = [
 ATTN_LORA_TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj"]
 MLP_LORA_TARGET_MODULES = ["gate_proj", "up_proj", "down_proj"]
 UNEMBED_LORA_TARGET_MODULES = ["lm_head"]
+
+_WARNED_LEGACY_MODAL_SWITCH = False
 
 
 @dataclass(slots=True)
@@ -70,7 +74,7 @@ class ModelRuntimeConfig:
         default_model: ModelConfig,
         default_lora: LoRAConfig,
         name: str = "<name>",
-    ) -> "ModelRuntimeConfig":
+    ) -> ModelRuntimeConfig:
         return cls(
             model=_replace_dataclass(default_model, data.get("model", {}), path=f"model_configs.{name}.model"),
             lora=_replace_dataclass(default_lora, data.get("lora", {}), path=f"model_configs.{name}.lora"),
@@ -100,13 +104,25 @@ class SpeedConfig:
 
     def __post_init__(self) -> None:
         if self.profile not in {"quality", "throughput"}:
-            raise ValueError("speed.profile must be 'quality' or 'throughput'.")
+            raise ConfigurationError(
+                "speed.profile must be 'quality' or 'throughput'.",
+                code="RU-1001",
+                hint="Choose speed.profile: quality or throughput.",
+            )
         if self.optimizer not in {"adamw_8bit", "paged_adamw_8bit", "adamw_torch"}:
-            raise ValueError("speed.optimizer must be 'adamw_8bit', 'paged_adamw_8bit', or 'adamw_torch'.")
+            raise ConfigurationError(
+                "speed.optimizer must be 'adamw_8bit', 'paged_adamw_8bit', or 'adamw_torch'.",
+                code="RU-1002",
+                hint="Pick one of the supported optimizer names.",
+            )
         for field_name in ("padding_free", "sample_packing", "vllm_standby", "flash_attention_2"):
             value = getattr(self, field_name)
             if value not in {"auto", True, False}:
-                raise ValueError(f"speed.{field_name} must be 'auto', true, or false.")
+                raise ConfigurationError(
+                    f"speed.{field_name} must be 'auto', true, or false.",
+                    code="RU-1003",
+                    hint="Use auto, true, or false for the speed toggle.",
+                )
 
 
 @dataclass(slots=True)
@@ -124,11 +140,23 @@ class DistributedConfig:
         if not self.enabled and self.mode is None:
             return
         if self.mode != "ddp":
-            raise ValueError("distributed.mode must be 'ddp' when distributed training is enabled.")
+            raise ConfigurationError(
+                "distributed.mode must be 'ddp' when distributed training is enabled.",
+                code="RU-1004",
+                hint="Set distributed.mode to ddp or disable distributed training.",
+            )
         if self.num_nodes != 1:
-            raise ValueError("Phase 1 distributed training only supports distributed.num_nodes == 1.")
+            raise ConfigurationError(
+                "Phase 1 distributed training only supports distributed.num_nodes == 1.",
+                code="RU-1005",
+                hint="Keep distributed.num_nodes at 1 for the current runtime.",
+            )
         if self.gpus_per_node < 1:
-            raise ValueError("distributed.gpus_per_node must be at least 1.")
+            raise ConfigurationError(
+                "distributed.gpus_per_node must be at least 1.",
+                code="RU-1006",
+                hint="Use at least one GPU per node when enabling distributed training.",
+            )
 
 
 @dataclass(slots=True)
@@ -158,18 +186,40 @@ class RuntimeConfig:
     modal: ModalConfig = field(default_factory=ModalConfig)
     checkpoint_root: str = "checkpoints"
     supported_models: list[str] = field(default_factory=list)
+    provider: str | None = None
+    provider_options: dict[str, Any] = field(default_factory=dict)
+    plugins: list[str] = field(default_factory=list)
+    scribe: dict[str, Any] = field(default_factory=dict)
+    run_name: str | None = None
+    tracking: bool = True
+    tracking_root: str | None = None
 
     def __post_init__(self) -> None:
         self.distributed.validate()
+        global _WARNED_LEGACY_MODAL_SWITCH
+        if self.provider is None and self.modal.enabled and not _WARNED_LEGACY_MODAL_SWITCH:
+            warnings.warn(
+                "modal.enabled is deprecated; set provider: modal instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            _WARNED_LEGACY_MODAL_SWITCH = True
+        if self.provider is not None and self.modal.enabled and self.provider not in ("modal",):
+            raise ConfigurationError(
+                f"Conflicting runtime selection: provider is '{self.provider}' but modal.enabled is true. "
+                "Set provider: modal, or drop modal.enabled (it is the legacy switch).",
+                code="RU-1007",
+                hint="Prefer provider: modal and remove the legacy modal.enabled switch.",
+            )
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "RuntimeConfig":
+    def from_file(cls, path: str | Path) -> RuntimeConfig:
         with Path(path).open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "RuntimeConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> RuntimeConfig:
         data = data or {}
         model_data = data.get("model", {})
         default_model_config: str | None = None
@@ -184,7 +234,11 @@ class RuntimeConfig:
         model_configs = {}
         for name, config in data.get("model_configs", {}).items():
             if not isinstance(config, dict):
-                raise ValueError(f"model_configs.{name} must be a mapping with optional model and lora sections.")
+                raise ConfigurationError(
+                    f"model_configs.{name} must be a mapping with optional model and lora sections.",
+                    code="RU-1008",
+                    hint="Each model_configs entry must be a YAML mapping.",
+                )
             model_configs[name] = ModelRuntimeConfig.from_dict(
                 config,
                 default_model=model,
@@ -194,10 +248,12 @@ class RuntimeConfig:
         if default_model_config is not None:
             if default_model_config not in model_configs:
                 available = _format_available_model_configs(model_configs)
-                raise ValueError(
+                raise ConfigurationError(
                     f"model.config '{default_model_config}' does not match a key in model_configs. "
                     f"Available model configs: {available}. Set model.config to one of these aliases "
-                    "or remove model.config to use model.base_model."
+                    "or remove model.config to use model.base_model.",
+                    code="RU-1009",
+                    hint="Set model.config to one of the keys listed in model_configs.",
                 )
             selected = model_configs[default_model_config]
             model = selected.model
@@ -214,7 +270,37 @@ class RuntimeConfig:
             modal=_build_dataclass(ModalConfig, data.get("modal", {}), path="modal"),
             checkpoint_root=data.get("checkpoint_root", "checkpoints"),
             supported_models=list(data.get("supported_models", [])),
+            provider=data.get("provider"),
+            provider_options=dict(data.get("provider_options", {})),
+            plugins=list(data.get("plugins", [])),
+            scribe=dict(data.get("scribe", {})),
+            run_name=data.get("run_name"),
+            tracking=bool(data.get("tracking", True)),
+            tracking_root=data.get("tracking_root"),
         )
+
+    @property
+    def store_root(self) -> str:
+        """Where the client-side run store lives.
+
+        Defaults to ``checkpoint_root``, but ``tracking_root`` overrides it for
+        topologies where ``checkpoint_root`` is a remote volume path (e.g. the
+        Modal ``/checkpoints`` mount) that is not writable on the client.
+
+        When neither is configured (checkpoint_root is still the bare default),
+        the ``RAY_UNSLOTH_DEFAULT_STORE_ROOT`` environment variable relocates
+        the store — used by the test suite to keep default-config clients from
+        writing into the working tree.
+        """
+        if self.tracking_root:
+            return self.tracking_root
+        if self.checkpoint_root == "checkpoints":
+            import os
+
+            override = os.environ.get("RAY_UNSLOTH_DEFAULT_STORE_ROOT")
+            if override:
+                return override
+        return self.checkpoint_root
 
     def resolve_model_configs(self, base_model: str | None = None) -> tuple[ModelConfig, LoRAConfig]:
         """Return the model and LoRA config for a requested model name or alias."""
@@ -236,21 +322,64 @@ class RuntimeConfig:
             return list(self.model_configs)
         return [self.model.base_model]
 
+    def validate(self) -> list[Any]:
+        """Return non-throwing validation issues for CLI/UI workflows."""
+        from ray_unsloth.providers import get_provider, resolve_provider_name
+        from ray_unsloth.providers.base import ValidationIssue, estimate_gpu_fit
+
+        issues: list[Any] = []
+        provider_name = resolve_provider_name(self)
+        try:
+            provider = get_provider(provider_name)
+        except Exception as exc:
+            return [
+                ValidationIssue(
+                    severity="error",
+                    path="provider",
+                    message=f"Unknown or invalid provider '{provider_name}': {exc}",
+                )
+            ]
+        issues.extend(provider.validate(self))
+        gpu = (self.provider_options or {}).get("gpu", self.modal.gpu)
+        fit = estimate_gpu_fit(self.model, self.lora, gpu=gpu)
+        if fit.fits is False:
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    path="model",
+                    message=(
+                        f"Estimated memory for {self.model.base_model} is "
+                        f"{fit.estimated_required_gb:.1f} GB on {gpu}; this likely will not fit."
+                    ),
+                    hint="Choose a larger GPU, shorter sequence length, or smaller model.",
+                )
+            )
+        return issues
+
 
 def _build_dataclass(cls, data: dict[str, Any], *, path: str):
     if not isinstance(data, dict):
-        raise ValueError(f"{path} must be a mapping.")
+        raise ConfigurationError(
+            f"{path} must be a mapping.",
+            code="RU-1010",
+            hint="Use a YAML mapping for this section.",
+        )
     field_names = {field.name for field in fields(cls)}
     unknown = sorted(set(data) - field_names)
     if unknown:
-        raise ValueError(
-            f"Unknown config field(s) in {path}: {unknown}. "
-            f"Valid fields: {sorted(field_names)}."
+        raise ConfigurationError(
+            f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.",
+            code="RU-1010",
+            hint="Remove the unknown keys or rename them to match the config dataclass.",
         )
     try:
         return cls(**data)
     except TypeError as exc:
-        raise ValueError(f"Invalid value for {path}: {exc}") from exc
+        raise ConfigurationError(
+            f"Invalid value for {path}: {exc}",
+            code="RU-1010",
+            hint="Check the field types and nested mappings in the YAML config.",
+        ) from exc
 
 
 def _replace_dataclass(instance, updates: dict[str, Any], *, path: str):
@@ -258,9 +387,10 @@ def _replace_dataclass(instance, updates: dict[str, Any], *, path: str):
     field_names = set(values)
     unknown = sorted(set(updates) - field_names)
     if unknown:
-        raise ValueError(
-            f"Unknown config field(s) in {path}: {unknown}. "
-            f"Valid fields: {sorted(field_names)}."
+        raise ConfigurationError(
+            f"Unknown config field(s) in {path}: {unknown}. Valid fields: {sorted(field_names)}.",
+            code="RU-1010",
+            hint="Remove the unknown keys or rename them to match the config dataclass.",
         )
     values.update(updates)
     return type(instance)(**values)
@@ -277,10 +407,16 @@ def load_config(config: str | Path | RuntimeConfig | dict[str, Any] | None) -> R
     if config is None:
         return RuntimeConfig()
     if isinstance(config, RuntimeConfig):
-        return config
-    if isinstance(config, (str, Path)):
-        return RuntimeConfig.from_file(config)
-    return RuntimeConfig.from_dict(config)
+        loaded = config
+    elif isinstance(config, (str, Path)):
+        loaded = RuntimeConfig.from_file(config)
+    else:
+        loaded = RuntimeConfig.from_dict(config)
+    if loaded.plugins:
+        from ray_unsloth.plugins import load_config_plugins
+
+        load_config_plugins(loaded.plugins)
+    return loaded
 
 
 def lora_target_modules_for_flags(

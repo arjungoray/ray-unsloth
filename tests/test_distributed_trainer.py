@@ -64,7 +64,7 @@ class FakeDistributedWorker:
                 metrics={"loss": loss, "loss:sum": loss, "rank": float(self.rank)},
                 loss_fn_outputs=outputs,
             ),
-            list(zip(indexes, outputs)),
+            list(zip(indexes, outputs, strict=False)),
         )
 
     def forward_backward_indexed(self, indexed_data, loss_fn="cross_entropy", loss_fn_config=None):

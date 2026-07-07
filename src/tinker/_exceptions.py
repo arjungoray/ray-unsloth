@@ -1,7 +1,6 @@
 """Small exception compatibility layer for Tinker examples."""
 
 from ray_unsloth.errors import RayUnslothError as TinkerError
-from ray_unsloth.errors import RayUnavailableError, UnsupportedLossError
 
 APIError = TinkerError
 APIConnectionError = TinkerError

@@ -5,10 +5,10 @@ The real Tinker SDK exposes generated type modules such as
 this module also registers lightweight submodule shims.
 """
 
-from ray_unsloth.types import *  # noqa: F403
 import sys
 import types as _module_types
 
+from ray_unsloth.types import *  # noqa: F403
 
 __path__ = []  # Let importlib treat this compatibility module like a package.
 

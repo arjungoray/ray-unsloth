@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from ray_unsloth.checkpoints import (
     atomic_checkpoint_dir,
@@ -19,7 +20,16 @@ from ray_unsloth.checkpoints import (
     write_manifest,
 )
 from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
-from ray_unsloth.errors import UnsupportedLossError
+from ray_unsloth.download import (
+    archive_relpath as _archive_relpath,
+)
+from ray_unsloth.download import (
+    load_or_create_secret,
+    make_token,
+    pack_lora_archive,
+)
+from ray_unsloth.errors import TrainingError, UnsupportedLossError
+from ray_unsloth.losses import get_loss, validate_datum_inputs
 from ray_unsloth.types import (
     AdamParams,
     CheckpointRef,
@@ -30,18 +40,12 @@ from ray_unsloth.types import (
     GeneratedSequence,
     ModelInput,
     OptimStepResult,
+    SamplerDownloadResponse,
     SampleResponse,
     SamplingParams,
-    SamplerDownloadResponse,
     SaveWeightsForSamplerResponse,
     TensorData,
     TrainingClientInfo,
-)
-from ray_unsloth.download import (
-    archive_relpath as _archive_relpath,
-    load_or_create_secret,
-    make_token,
-    pack_lora_archive,
 )
 
 
@@ -55,7 +59,7 @@ def _torch_dtype(name: str):
         "bf16": torch.bfloat16,
         "float32": torch.float32,
         "fp32": torch.float32,
-    }.get(name.lower(), None)
+    }.get(name.lower())
 
 
 def _requires_transformers_5_for_qwen3_5(base_model: str) -> bool:
@@ -71,10 +75,26 @@ def _module_available(module_name: str) -> bool:
 
 
 def _flash_attention_2_available() -> bool:
+    try:
+        from ray_unsloth.runtime.unsloth import engine as engine_module
+
+        override = getattr(engine_module, "_flash_attention_2_available", None)
+        if callable(override) and override is not _flash_attention_2_available:
+            return bool(override())
+    except Exception:
+        pass
     return _module_available("flash_attn")
 
 
 def _flash_attention_3_available() -> bool:
+    try:
+        from ray_unsloth.runtime.unsloth import engine as engine_module
+
+        override = getattr(engine_module, "_flash_attention_3_available", None)
+        if callable(override) and override is not _flash_attention_3_available:
+            return bool(override())
+    except Exception:
+        pass
     return _module_available("flash_attn_interface")
 
 
@@ -365,8 +385,8 @@ class UnslothEngine:
             seen.add(id(current))
             config = getattr(current, "config", None)
             if config is not None:
-                setattr(config, "_attn_implementation", attn_implementation)
-                setattr(config, "attn_implementation", attn_implementation)
+                config._attn_implementation = attn_implementation
+                config.attn_implementation = attn_implementation
             for attr in ("base_model", "model", "language_model"):
                 child = getattr(current, attr, None)
                 if child is not None:
@@ -411,9 +431,7 @@ class UnslothEngine:
                 import bitsandbytes as bnb
 
                 optimizer_cls = (
-                    bnb.optim.PagedAdamW8bit
-                    if optimizer_name == "paged_adamw_8bit"
-                    else bnb.optim.AdamW8bit
+                    bnb.optim.PagedAdamW8bit if optimizer_name == "paged_adamw_8bit" else bnb.optim.AdamW8bit
                 )
             except Exception:
                 optimizer_cls = torch.optim.AdamW
@@ -430,7 +448,11 @@ class UnslothEngine:
         import torch
 
         if not data:
-            raise ValueError("data must not be empty")
+            raise TrainingError(
+                "data must not be empty",
+                code="RU-4006",
+                hint="Pass at least one Datum before calling forward_backward.",
+            )
         input_ids = [datum.model_input.to_ints() for datum in data]
         lengths = [len(tokens) for tokens in input_ids]
         starts = []
@@ -470,9 +492,7 @@ class UnslothEngine:
     def _loss_tensor_data(self, raw: Any) -> list[Any]:
         if isinstance(raw, ModelInput):
             return raw.to_ints()
-        if isinstance(raw, TensorData):
-            raw = raw.tolist()
-        elif hasattr(raw, "tolist"):
+        if isinstance(raw, TensorData) or hasattr(raw, "tolist"):
             raw = raw.tolist()
         return list(raw)
 
@@ -480,7 +500,7 @@ class UnslothEngine:
         import torch
 
         rows = []
-        for datum, input_row in zip(data, input_ids):
+        for datum, input_row in zip(data, input_ids, strict=False):
             raw = datum.loss_fn_inputs.get("labels") or datum.loss_fn_inputs.get("target_tokens")
             if raw is None:
                 row = input_row.detach().clone().tolist()
@@ -547,7 +567,6 @@ class UnslothEngine:
         return local_position
 
     def _cross_entropy_loss(self, data: list[Datum]):
-        import torch
 
         plan = self._batch_from_data(data, packed=self._padding_free_requested())
         try:
@@ -588,7 +607,7 @@ class UnslothEngine:
                 weights = [float(value) for value in self._loss_tensor_data(raw_weights)][:input_len]
             logit_positions = [position + logit_offset for position in positions]
             weighted_logit_positions = []
-            for position, logit_position in zip(positions, logit_positions):
+            for position, logit_position in zip(positions, logit_positions, strict=False):
                 if logit_position < 0 or logit_position >= input_len or position >= len(targets):
                     continue
                 if int(targets[position]) == -100:
@@ -619,8 +638,12 @@ class UnslothEngine:
         token_weights = []
         logits_len = int(log_probs.shape[1])
 
-        for row_idx, (input_len, positions, output_indices, logit_positions, targets, weights) in enumerate(prepared_rows):
-            for output_index, target_index, logit_index in zip(output_indices, positions, logit_positions):
+        for row_idx, (input_len, positions, output_indices, logit_positions, targets, weights) in enumerate(
+            prepared_rows
+        ):
+            for output_index, target_index, logit_index in zip(
+                output_indices, positions, logit_positions, strict=False
+            ):
                 target_token = int(targets[target_index])
                 if target_token == -100:
                     continue
@@ -665,7 +688,6 @@ class UnslothEngine:
         loss_fn: str,
         loss_fn_config: dict[str, Any] | None = None,
     ):
-        import torch
 
         loss_fn_config = loss_fn_config or {}
         plan = self._batch_from_data(data, packed=self._padding_free_requested())
@@ -691,14 +713,29 @@ class UnslothEngine:
     ):
         import torch
 
+        spec = get_loss(loss_fn)
+        if spec.kind != "policy_gradient" or spec.token_loss is None:
+            raise UnsupportedLossError(
+                f"Unsupported policy-gradient loss: {loss_fn}",
+                code="RU-4003",
+                hint="Use a registered policy_gradient loss with a token_loss implementation.",
+            )
+        loss_config = spec.merged_config(loss_fn_config)
         batch = plan.batch
         prepared_rows = []
         keep_counts = []
         for row_idx, datum in enumerate(data):
+            validate_datum_inputs(spec, datum.loss_fn_inputs, datum_index=row_idx)
             input_len = plan.row_lengths[row_idx]
-            targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][:input_len]
-            old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][:input_len]
-            advantages = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["advantages"])][:input_len]
+            targets = [int(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["target_tokens"])][
+                :input_len
+            ]
+            old_logprobs = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["logprobs"])][
+                :input_len
+            ]
+            advantages = [float(value) for value in self._loss_tensor_data(datum.loss_fn_inputs["advantages"])][
+                :input_len
+            ]
             raw_weights = datum.loss_fn_inputs.get("weights")
             weights = [1.0] * input_len
             if raw_weights is not None:
@@ -725,8 +762,6 @@ class UnslothEngine:
             device=log_probs.device,
         )
         external_ratios = torch.zeros_like(external_logprobs)
-        clip_low = float(loss_fn_config.get("clip_low_threshold", 0.8))
-        clip_high = float(loss_fn_config.get("clip_high_threshold", 1.2))
         model_rows = []
         local_positions = []
         target_tokens = []
@@ -775,16 +810,12 @@ class UnslothEngine:
         output_positions_t = torch.tensor(output_positions, dtype=torch.long, device=log_probs.device)
         external_logprobs[row_indices_t, output_positions_t] = current_logprobs
         external_ratios[row_indices_t, output_positions_t] = ratio
-        if loss_fn == "importance_sampling":
-            token_losses = -ratio * advantages_t
-        elif loss_fn == "ppo":
-            clipped_ratio = ratio.clamp(clip_low, clip_high)
-            token_losses = -torch.minimum(ratio * advantages_t, clipped_ratio * advantages_t)
-        elif loss_fn == "cispo":
-            clipped_ratio = ratio.detach().clamp(clip_low, clip_high)
-            token_losses = -clipped_ratio * advantages_t * current_logprobs
-        else:
-            raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+        token_losses = spec.token_loss(
+            ratio=ratio,
+            advantages=advantages_t,
+            current_logprobs=current_logprobs,
+            config=loss_config,
+        )
         total_loss = token_losses.sum()
 
         return total_loss, outputs, external_logprobs, external_ratios
@@ -834,18 +865,24 @@ class UnslothEngine:
 
     def forward(self, data: list[Datum], loss_fn: str = "cross_entropy") -> ForwardOutput:
         import torch
+
         from unsloth import FastLanguageModel
 
         FastLanguageModel.for_inference(self._unwrap_model())
         with torch.no_grad():
-            if loss_fn == "cross_entropy":
+            spec = get_loss(loss_fn)
+            if spec.name == "cross_entropy":
                 loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
                 loss_fn_outputs = self._loss_fn_outputs(row_logprobs)
-            elif loss_fn in {"importance_sampling", "ppo", "cispo"}:
+            elif spec.kind == "policy_gradient":
                 loss, _outputs, row_logprobs, ratios = self._policy_loss(data, loss_fn=loss_fn)
                 loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
             else:
-                raise UnsupportedLossError(f"Unsupported loss: {loss_fn}")
+                raise UnsupportedLossError(
+                    f"Unsupported loss: {loss_fn}",
+                    code="RU-4001",
+                    hint="Choose one of the registered loss names.",
+                )
         value = float(loss.detach().cpu())
         return ForwardOutput(loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs)
 
@@ -856,14 +893,16 @@ class UnslothEngine:
         loss_fn_config: dict[str, Any] | None = None,
     ) -> ForwardBackwardOutput:
         import torch
+
         from unsloth import FastLanguageModel
 
         FastLanguageModel.for_training(self._unwrap_model())
         self._ensure_optimizer()
-        if loss_fn == "cross_entropy":
+        spec = get_loss(loss_fn)
+        if spec.name == "cross_entropy":
             loss, _outputs, row_logprobs = self._cross_entropy_loss(data)
             loss_fn_outputs = self._loss_fn_outputs(row_logprobs)
-        elif loss_fn in {"importance_sampling", "ppo", "cispo"}:
+        elif spec.kind == "policy_gradient":
             loss, _outputs, row_logprobs, ratios = self._policy_loss(
                 data,
                 loss_fn=loss_fn,
@@ -871,13 +910,23 @@ class UnslothEngine:
             )
             loss_fn_outputs = self._loss_fn_outputs(row_logprobs, ratios=ratios)
         else:
-            raise UnsupportedLossError(f"Unsupported loss '{loss_fn}'.")
+            raise UnsupportedLossError(
+                f"Unsupported loss '{loss_fn}'.",
+                code="RU-4001",
+                hint="Choose one of the registered loss names.",
+            )
         if not torch.isfinite(loss):
-            raise FloatingPointError(f"Non-finite training loss: {float(loss.detach().cpu())}")
+            raise TrainingError(
+                f"Non-finite training loss: {float(loss.detach().cpu())}",
+                code="RU-4005",
+                hint="Check the loss inputs and optimizer settings before retrying.",
+            )
         backward_loss = loss * self.world_size if self.is_distributed else loss
         backward_loss.backward()
         value = float(loss.detach().cpu())
-        return ForwardBackwardOutput(loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs)
+        return ForwardBackwardOutput(
+            loss=value, metrics={"loss": value, "loss:sum": value}, loss_fn_outputs=loss_fn_outputs
+        )
 
     def forward_backward_custom(
         self,
@@ -892,7 +941,11 @@ class UnslothEngine:
         outputs = self.model(**plan.batch)
         if isinstance(loss_fn, str):
             if loss_fn not in self._custom_losses:
-                raise UnsupportedLossError(f"Custom loss is not registered: {loss_fn}")
+                raise UnsupportedLossError(
+                    f"Custom loss is not registered: {loss_fn}",
+                    code="RU-4004",
+                    hint="Register the custom loss before calling forward_backward_custom.",
+                )
             callable_loss = self._custom_losses[loss_fn]
         else:
             callable_loss = loss_fn
@@ -928,6 +981,7 @@ class UnslothEngine:
         topk_prompt_logprobs: int = 0,
     ) -> SampleResponse:
         import torch
+
         from unsloth import FastLanguageModel
 
         FastLanguageModel.for_inference(self._unwrap_model())
@@ -1044,7 +1098,7 @@ class UnslothEngine:
         sequences = generated.sequences.detach().cpu().tolist()
         outputs = []
         prompt_length = len(prompt_tokens)
-        for row_index, sequence in enumerate(sequences):
+        for _row_index, sequence in enumerate(sequences):
             completion_tokens = list(sequence[prompt_length:])
             finish_reason = self._finish_reason(completion_tokens, sampling_params.max_tokens)
             if sampling_params.max_time is not None and finish_reason == "stop":
@@ -1068,7 +1122,7 @@ class UnslothEngine:
             )
         return [
             (tokens, logprobs, finish_reason)
-            for (tokens, _empty_logprobs, finish_reason), logprobs in zip(outputs, logprob_rows)
+            for (tokens, _empty_logprobs, finish_reason), logprobs in zip(outputs, logprob_rows, strict=False)
         ]
 
     def _completion_logprobs_from_generate_scores(
@@ -1160,8 +1214,9 @@ class UnslothEngine:
         sampling_params: SamplingParams,
         stop_token_ids: list[list[int]],
     ) -> list[tuple[list[int], list[float | None], str]]:
-        import torch
         import time
+
+        import torch
 
         outputs = []
         for _sample_index in range(num_samples):
@@ -1169,7 +1224,9 @@ class UnslothEngine:
             completion_tokens: list[int] = []
             logprobs: list[float | None] = []
             finish_reason: str | None = None
-            deadline = time.monotonic() + float(sampling_params.max_time) if sampling_params.max_time is not None else None
+            deadline = (
+                time.monotonic() + float(sampling_params.max_time) if sampling_params.max_time is not None else None
+            )
 
             for _step in range(sampling_params.max_tokens):
                 if deadline is not None and time.monotonic() >= deadline:
@@ -1271,7 +1328,11 @@ class UnslothEngine:
             tokens = tokens.tolist()
         if tokens and isinstance(tokens[0], list):
             if len(tokens) != 1:
-                raise ValueError("Expected a single tokenized stop sequence")
+                raise TrainingError(
+                    "Expected a single tokenized stop sequence",
+                    code="RU-4007",
+                    hint="Pass exactly one tokenized stop sequence at a time.",
+                )
             tokens = tokens[0]
         return list(tokens)
 
@@ -1350,8 +1411,10 @@ class UnslothEngine:
         if topk_prompt_logprobs > 0:
             values, indices = torch.topk(log_probs, k=topk_prompt_logprobs, dim=-1)
             topk = [[]]
-            for row_values, row_indices in zip(values.detach().cpu(), indices.detach().cpu()):
-                topk.append([(int(token_id), float(value)) for token_id, value in zip(row_indices, row_values)])
+            for row_values, row_indices in zip(values.detach().cpu(), indices.detach().cpu(), strict=False):
+                topk.append(
+                    [(int(token_id), float(value)) for token_id, value in zip(row_indices, row_values, strict=False)]
+                )
         return prompt_logprobs, topk
 
     def _save_weights(self, target: Path, *, include_optimizer: bool, kind: str) -> CheckpointRef:
@@ -1360,6 +1423,7 @@ class UnslothEngine:
         with atomic_checkpoint_dir(target) as tmp_dir:
             self._unwrap_model().save_pretrained(str(tmp_dir))
             self.tokenizer.save_pretrained(str(tmp_dir))
+            _promote_active_adapter(self._unwrap_model(), tmp_dir)
             if include_optimizer:
                 optimizer = self._ensure_optimizer()
                 torch.save(optimizer.state_dict(), tmp_dir / "optimizer.pt")
@@ -1408,7 +1472,11 @@ class UnslothEngine:
             dist.broadcast_object_list(values, src=0)
             manifest = values[0]
         if manifest is None:
-            raise RuntimeError("Rank 0 did not provide checkpoint manifest.")
+            raise TrainingError(
+                "Rank 0 did not provide checkpoint manifest.",
+                code="RU-4008",
+                hint="Ensure rank 0 saves a checkpoint manifest before restore.",
+            )
         self._validate_checkpoint_manifest(manifest, path)
         self.step = int(manifest.get("step", 0))
         resolved = resolve_path(path)
@@ -1478,3 +1546,32 @@ class UnslothEngine:
             url=None,
             checkpoint=save.checkpoint,
         )
+
+
+def _promote_active_adapter(model: Any, checkpoint_dir: Path) -> None:
+    """Ensure the checkpoint's top-level adapter files are the ACTIVE adapter.
+
+    A client restored from a checkpoint carries two PEFT adapters: the fresh
+    untrained "default" and the loaded/trained "ray_unsloth_step_N".
+    ``save_pretrained`` writes "default" at the top level and the trained one
+    into a nested directory — so every downstream consumer (sampler restore,
+    exports, GGUF conversion) silently reads UNTRAINED weights. Promote the
+    active adapter's files to the top level after saving.
+    """
+    import shutil
+
+    active = getattr(model, "active_adapter", None)
+    if callable(active):  # some PEFT versions expose a method
+        try:
+            active = active()
+        except Exception:
+            return
+    if not isinstance(active, str) or active == "default":
+        return
+    nested = checkpoint_dir / active
+    if not nested.is_dir():
+        return
+    for name in ("adapter_model.safetensors", "adapter_model.bin", "adapter_config.json"):
+        source = nested / name
+        if source.exists():
+            shutil.copy2(source, checkpoint_dir / name)

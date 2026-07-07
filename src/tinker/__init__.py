@@ -2,8 +2,8 @@
 
 from ray_unsloth import *  # noqa: F403
 from ray_unsloth import types as types
-from ray_unsloth.errors import RayUnslothError as TinkerError
 from ray_unsloth.errors import RayUnavailableError, UnsupportedLossError
+from ray_unsloth.errors import RayUnslothError as TinkerError
 
 APIError = TinkerError
 APIConnectionError = TinkerError
@@ -24,4 +24,27 @@ SidecarIPCError = TinkerError
 SidecarStartupError = TinkerError
 UnprocessableEntityError = TinkerError
 
-__all__ = [name for name in globals() if not name.startswith("_")]
+__all__ = [
+    "APIConnectionError",
+    "APIError",
+    "APIResponseValidationError",
+    "APIStatusError",
+    "APITimeoutError",
+    "AuthenticationError",
+    "BadRequestError",
+    "ConflictError",
+    "InternalServerError",
+    "NotFoundError",
+    "PermissionDeniedError",
+    "RateLimitError",
+    "RayUnavailableError",
+    "RequestFailedError",
+    "SidecarDiedError",
+    "SidecarError",
+    "SidecarIPCError",
+    "SidecarStartupError",
+    "TinkerError",
+    "UnprocessableEntityError",
+    "UnsupportedLossError",
+    "types",
+]

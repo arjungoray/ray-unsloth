@@ -70,8 +70,7 @@ def _ordered_loss_outputs(indexed_outputs: list[tuple[int, dict[str, Any]]]) -> 
 def _shard_indexed_data(data: list[Datum], world_size: int) -> list[list[tuple[int, Datum]]]:
     if len(data) < world_size:
         raise ValueError(
-            "DDP training requires at least one datum per rank; "
-            f"got {len(data)} datum(s) for world_size={world_size}."
+            f"DDP training requires at least one datum per rank; got {len(data)} datum(s) for world_size={world_size}."
         )
     shards: list[list[tuple[int, Datum]]] = [[] for _ in range(world_size)]
     for index, datum in enumerate(data):
@@ -186,7 +185,7 @@ class DistributedTrainerWorker:
     def forward_indexed(self, indexed_data: list[tuple[int, Datum]], loss_fn: str = "cross_entropy"):
         indexes = [index for index, _datum in indexed_data]
         output = self._engine().forward([datum for _index, datum in indexed_data], loss_fn=loss_fn)
-        return output, list(zip(indexes, output.loss_fn_outputs))
+        return output, list(zip(indexes, output.loss_fn_outputs, strict=False))
 
     def forward_backward_indexed(
         self,
@@ -200,7 +199,7 @@ class DistributedTrainerWorker:
             loss_fn=loss_fn,
             loss_fn_config=loss_fn_config,
         )
-        return output, list(zip(indexes, output.loss_fn_outputs))
+        return output, list(zip(indexes, output.loss_fn_outputs, strict=False))
 
     def forward_backward_custom_indexed(
         self,
@@ -251,10 +250,7 @@ class DistributedTrainerCoordinator:
 
     def _all(self, method_name: str, args_by_rank: list[tuple[Any, ...]], kwargs: dict[str, Any] | None = None):
         kwargs = kwargs or {}
-        calls = [
-            _call(worker, method_name, *args_by_rank[rank], **kwargs)
-            for rank, worker in enumerate(self.workers)
-        ]
+        calls = [_call(worker, method_name, *args_by_rank[rank], **kwargs) for rank, worker in enumerate(self.workers)]
         return _resolve_many(calls)
 
     def _aggregate_forward(self, worker_results: list[tuple[Any, list[tuple[int, dict[str, Any]]]]], output_type):

@@ -1,0 +1,660 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ray-unsloth · control plane</title>
+<style>
+  :root {
+    --surface-1: #fcfcfb; --plane: #f9f9f7;
+    --ink-1: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6; --series-2: #1baf7a; --series-3: #eda100; --series-4: #008300;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --accent: #2a78d6; --accent-wash: rgba(42,120,214,0.10);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  :root[data-theme="dark"] {
+    --surface-1: #1a1a19; --plane: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #199e70; --series-3: #c98500; --series-4: #008300;
+    --accent: #3987e5; --accent-wash: rgba(57,135,229,0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --surface-1: #1a1a19; --plane: #0d0d0d;
+      --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+      --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5; --series-2: #199e70; --series-3: #c98500; --series-4: #008300;
+      --accent: #3987e5; --accent-wash: rgba(57,135,229,0.14);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--plane); color: var(--ink-1);
+    display: grid; grid-template-columns: 216px 1fr;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ---- sidebar ---- */
+  nav {
+    background: var(--surface-1); border-right: 1px solid var(--border);
+    padding: 20px 12px; display: flex; flex-direction: column; gap: 2px;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .brand { display: flex; align-items: baseline; gap: 8px; padding: 0 10px 16px; }
+  .brand b { font-size: 15px; letter-spacing: -0.01em; }
+  .brand span { font-size: 11px; color: var(--ink-3); }
+  nav a.item {
+    display: flex; align-items: center; gap: 9px; padding: 7px 10px;
+    border-radius: 7px; color: var(--ink-2); font-weight: 500;
+  }
+  nav a.item:hover { background: var(--accent-wash); text-decoration: none; }
+  nav a.item.active { background: var(--accent-wash); color: var(--ink-1); }
+  nav a.item svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.7; flex: none; }
+  nav .foot { margin-top: auto; padding: 10px; font-size: 12px; color: var(--ink-3); display: flex; flex-direction: column; gap: 6px; }
+  #theme-toggle {
+    background: none; border: 1px solid var(--border); color: var(--ink-2);
+    border-radius: 7px; padding: 5px 10px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  #theme-toggle:hover { background: var(--accent-wash); }
+
+  /* ---- main ---- */
+  main { padding: 26px 32px 60px; max-width: 1220px; min-width: 0; }
+  header.page { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
+  header.page h1 { font-size: 19px; letter-spacing: -0.01em; }
+  header.page .sub { color: var(--ink-3); font-size: 13px; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .card, .panel {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .panel { margin-bottom: 18px; overflow-x: auto; }
+  .panel h2 { font-size: 13px; font-weight: 600; color: var(--ink-2); margin-bottom: 12px; }
+  .stat .label { font-size: 12px; color: var(--ink-2); }
+  .stat .value { font-size: 26px; font-weight: 600; margin-top: 2px; }
+  .stat .hint { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--ink-3); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--grid); }
+  td { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.rowlink { cursor: pointer; }
+  tr.rowlink:hover td { background: var(--accent-wash); }
+
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .chip.run .dot { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  .chip.ok .dot { background: var(--good); }
+  .chip.fail .dot { background: var(--critical); }
+  .chip.warn .dot { background: var(--warning); }
+  .chip.plan .dot { background: var(--ink-3); }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  .path { color: var(--ink-2); word-break: break-all; }
+  .muted { color: var(--ink-3); }
+  .empty { color: var(--ink-3); padding: 26px 0; text-align: center; font-size: 13px; }
+
+  /* chart */
+  .chart-wrap { position: relative; }
+  .chart-tip {
+    position: absolute; pointer-events: none; background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.14); font-size: 12px; display: none; z-index: 5;
+    white-space: nowrap;
+  }
+  .chart-tip .v { font-weight: 600; font-size: 13px; }
+  .chart-tip .k { color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+  .chart-tip .key { display: inline-block; width: 10px; height: 2px; background: var(--series-1); border-radius: 1px; }
+
+  .logbox {
+    font-family: var(--mono); font-size: 12px; background: var(--plane);
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+    max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .logbox .t { color: var(--ink-3); margin-right: 8px; }
+  .logbox .warn { color: var(--warning); }
+  .logbox .error { color: var(--critical); }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px; font-size: 13px; }
+  .kv dt { color: var(--ink-3); }
+  .kv dd { font-variant-numeric: tabular-nums; word-break: break-all; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } body { grid-template-columns: 64px 1fr; } nav .label-text, .brand span, nav .foot { display: none; } main { padding: 20px 16px 48px; } }
+
+  .lineage { display: flex; flex-direction: column; gap: 0; }
+  .lineage .node { display: flex; gap: 10px; align-items: stretch; }
+  .lineage .rail { display: flex; flex-direction: column; align-items: center; width: 14px; flex: none; }
+  .lineage .rail .pt { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--surface-1); box-shadow: 0 0 0 1px var(--accent); margin-top: 4px; flex: none; }
+  .lineage .rail .stem { width: 2px; flex: 1; background: var(--grid); min-height: 18px; }
+  .lineage .body { padding-bottom: 16px; min-width: 0; }
+
+  .issue { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--grid); font-size: 13px; align-items: baseline; }
+  .issue:last-child { border-bottom: 0; }
+  .sev { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 7px; border-radius: 4px; flex: none; }
+  .sev.error { background: var(--critical); color: #fff; }
+  .sev.warning { background: var(--warning); color: #4a3400; }
+  .sev.info { background: var(--accent-wash); color: var(--accent); }
+
+  .provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .provider-grid .card h3 { font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .provider-grid .card p { color: var(--ink-2); font-size: 12.5px; margin: 6px 0 10px; }
+  .checks { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-family: var(--mono); }
+  .checks .pass { color: var(--good); }
+  .checks .fail { color: var(--critical); }
+
+  .bar-meter { height: 8px; border-radius: 4px; background: var(--accent-wash); overflow: hidden; margin-top: 6px; }
+  .bar-meter > div { height: 100%; border-radius: 4px 0 0 4px; }
+  button.linky { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; font-size: 13px; padding: 0; }
+  button.linky:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<nav>
+  <div class="brand"><b>ray-unsloth</b><span>control plane</span></div>
+  <a class="item" href="#/" data-view="overview"><svg viewBox="0 0 24 24"><path d="M3 12l9-8 9 8M5 10v10h14V10"/></svg><span class="label-text">Overview</span></a>
+  <a class="item" href="#/runs" data-view="runs"><svg viewBox="0 0 24 24"><path d="M4 18V8m6 10V4m6 14v-7m4 7H2"/></svg><span class="label-text">Runs</span></a>
+  <a class="item" href="#/checkpoints" data-view="checkpoints"><svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="18" r="2.4"/><path d="M12 8.5V13m0 0l-4.5 3.2M12 13l4.5 3.2"/></svg><span class="label-text">Checkpoints</span></a>
+  <a class="item" href="#/evals" data-view="evals"><svg viewBox="0 0 24 24"><path d="M4 13l4 4L20 6"/></svg><span class="label-text">Evals</span></a>
+  <a class="item" href="#/providers" data-view="providers"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg><span class="label-text">Providers</span></a>
+  <a class="item" href="#/topology" data-view="topology"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v4m0 10v4M3 12h4m10 0h4"/></svg><span class="label-text">Topology</span></a>
+  <a class="item" href="#/config" data-view="config"><svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm8 4a8 8 0 01-.1 1.3l2 1.6-2 3.4-2.4-1a8 8 0 01-2.2 1.3L15 21h-4l-.4-2.4a8 8 0 01-2.2-1.3l-2.4 1-2-3.4 2-1.6A8 8 0 016 12"/></svg><span class="label-text">Config</span></a>
+  <a class="item" href="#/losses" data-view="losses"><svg viewBox="0 0 24 24"><path d="M4 5c4 0 4 14 8 14s4-14 8-14"/></svg><span class="label-text">Losses</span></a>
+  <div class="foot">
+    <button id="theme-toggle" type="button">Toggle theme</button>
+    <a href="https://arjungoray.github.io/ray-unsloth/" target="_blank" rel="noopener">Documentation ↗</a>
+    <span id="foot-provider" class="mono"></span>
+  </div>
+</nav>
+<main id="main"></main>
+
+<script>
+"use strict";
+/* ---------- helpers ---------- */
+const $main = document.getElementById("main");
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of children.flat()) {
+    if (child == null) continue;
+    node.append(child.nodeType ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+async function api(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+const fmt = {
+  num(v, digits = 4) {
+    if (v == null || Number.isNaN(v)) return "—";
+    if (Number.isInteger(v) && Math.abs(v) < 1e6) return v.toLocaleString();
+    return Number(v).toFixed(digits);
+  },
+  when(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts * 1000);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  },
+  ago(ts) {
+    if (!ts) return "—";
+    const s = Math.max(0, (Date.now() / 1000) - ts);
+    if (s < 60) return `${Math.floor(s)}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
+  },
+  dur(a, b) {
+    if (!a) return "—";
+    const s = Math.max(0, (b || Date.now() / 1000) - a);
+    if (s < 90) return `${Math.floor(s)}s`;
+    if (s < 5400) return `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
+    return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  },
+  short(path, n = 46) {
+    if (!path) return "—";
+    return path.length > n ? "…" + path.slice(-n) : path;
+  },
+};
+function statusChip(status) {
+  const map = { running: ["run", "running"], completed: ["ok", "completed"], failed: ["fail", "failed"] };
+  const [cls, label] = map[status] || ["plan", status || "unknown"];
+  return el("span", { class: `chip ${cls}` }, el("span", { class: "dot" }), label);
+}
+function pageHeader(title, subtitle, ...extra) {
+  return el("header", { class: "page" },
+    el("div", {}, el("h1", {}, title), subtitle ? el("div", { class: "sub" }, subtitle) : null),
+    extra.length ? el("div", {}, ...extra) : null);
+}
+function emptyState(text) { return el("div", { class: "empty" }, text); }
+function panel(title, ...children) {
+  return el("section", { class: "panel" }, title ? el("h2", {}, title) : null, ...children);
+}
+
+/* ---------- theme ---------- */
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const isDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const current = document.documentElement.getAttribute("data-theme") || (isDark ? "dark" : "light");
+  const next = current === "dark" ? "light" : "dark";
+  localStorage.setItem("ru-theme", next);
+  document.documentElement.setAttribute("data-theme", next);
+});
+if (localStorage.getItem("ru-theme")) {
+  document.documentElement.setAttribute("data-theme", localStorage.getItem("ru-theme"));
+}
+
+/* ---------- SVG line chart: crosshair + tooltip, single series ---------- */
+function lossChart(points, { height = 220, yLabel = "loss" } = {}) {
+  const wrap = el("div", { class: "chart-wrap" });
+  if (points.length < 2) {
+    wrap.append(emptyState(points.length === 1 ? "One data point so far — chart appears after the next step." : "No loss data recorded."));
+    return wrap;
+  }
+  const width = 860, padL = 54, padR = 18, padT = 14, padB = 26;
+  const ys = points.map(p => p.y);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  if (yMin === yMax) { yMin -= 0.5; yMax += 0.5; }
+  const yPad = (yMax - yMin) * 0.08;
+  yMin = Math.max(0, yMin - yPad); yMax += yPad;
+  const X = i => padL + (i / (points.length - 1)) * (width - padL - padR);
+  const Y = v => padT + (1 - (v - yMin) / (yMax - yMin)) * (height - padT - padB);
+
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", "100%");
+  svg.style.display = "block";
+  function svgEl(tag, attrs) {
+    const node = document.createElementNS(svgNS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    svg.append(node);
+    return node;
+  }
+
+  const tickCount = 4;
+  for (let t = 0; t <= tickCount; t++) {
+    const v = yMin + (t / tickCount) * (yMax - yMin);
+    const y = Y(v);
+    svgEl("line", { x1: padL, x2: width - padR, y1: y, y2: y, stroke: "var(--grid)", "stroke-width": 1 });
+    const label = svgEl("text", { x: padL - 8, y: y + 4, "text-anchor": "end", fill: "var(--ink-3)", "font-size": 11 });
+    label.style.fontVariantNumeric = "tabular-nums";
+    label.textContent = Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2);
+  }
+  svgEl("text", { x: padL, y: height - 8, fill: "var(--ink-3)", "font-size": 11 }).textContent = points[0].label;
+  svgEl("text", { x: width - padR, y: height - 8, "text-anchor": "end", fill: "var(--ink-3)", "font-size": 11 })
+    .textContent = points[points.length - 1].label;
+
+  const lineD = points.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+  svgEl("path", { d: `${lineD}L${X(points.length - 1).toFixed(1)},${Y(yMin)}L${X(0).toFixed(1)},${Y(yMin)}Z`, fill: "var(--series-1)", opacity: 0.10 });
+  svgEl("path", { d: lineD, fill: "none", stroke: "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
+  const last = points.length - 1;
+  svgEl("circle", { cx: X(last), cy: Y(points[last].y), r: 6, fill: "var(--surface-1)" });
+  svgEl("circle", { cx: X(last), cy: Y(points[last].y), r: 4, fill: "var(--series-1)" });
+
+  const cross = svgEl("line", { y1: padT, y2: height - padB, stroke: "var(--baseline)", "stroke-width": 1 });
+  const hoverRing = svgEl("circle", { r: 6, fill: "var(--surface-1)" });
+  const hover = svgEl("circle", { r: 4, fill: "var(--series-1)" });
+  cross.style.display = hoverRing.style.display = hover.style.display = "none";
+
+  const tip = el("div", { class: "chart-tip" });
+  wrap.append(svg, tip);
+
+  function onMove(evt) {
+    const rect = svg.getBoundingClientRect();
+    const fx = ((evt.clientX - rect.left) / rect.width) * width;
+    const i = Math.round(((fx - padL) / (width - padL - padR)) * (points.length - 1));
+    if (i < 0 || i > points.length - 1) return onLeave();
+    const p = points[i];
+    cross.style.display = "";
+    cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i));
+    hover.style.display = hoverRing.style.display = "";
+    hover.setAttribute("cx", X(i)); hover.setAttribute("cy", Y(p.y));
+    hoverRing.setAttribute("cx", X(i)); hoverRing.setAttribute("cy", Y(p.y));
+    tip.replaceChildren(
+      el("div", { class: "v" }, fmt.num(p.y)),
+      el("div", { class: "k" }, el("span", { class: "key" }), `${yLabel} · ${p.label}`)
+    );
+    tip.style.display = "block";
+    const tipX = (X(i) / width) * rect.width;
+    tip.style.left = Math.min(rect.width - tip.offsetWidth - 8, Math.max(8, tipX + 12)) + "px";
+    tip.style.top = ((Y(p.y) / height) * rect.height - tip.offsetHeight - 10) + "px";
+  }
+  function onLeave() {
+    cross.style.display = hover.style.display = hoverRing.style.display = "none";
+    tip.style.display = "none";
+  }
+  svg.addEventListener("pointermove", onMove);
+  svg.addEventListener("pointerleave", onLeave);
+  return wrap;
+}
+
+/* ---------- views ---------- */
+let livePoll = null;
+function stopPolling() { if (livePoll) { clearTimeout(livePoll); livePoll = null; } }
+
+async function viewOverview() {
+  const [summary, runs] = await Promise.all([api("/api/summary"), api("/api/runs")]);
+  const tiles = [
+    { label: "Runs", value: summary.runs, hint: "all time on this store" },
+    { label: "Running now", value: summary.running, hint: summary.running ? "live" : "idle" },
+    { label: "Checkpoints", value: summary.checkpoints, hint: "with lineage" },
+    { label: "Evals", value: summary.evals, hint: "stored reports" },
+  ];
+  $main.replaceChildren(
+    pageHeader("Overview", `provider: ${summary.provider} · checkpoints at ${summary.checkpoint_root}`),
+    el("div", { class: "cards" }, tiles.map(t => el("div", { class: "card stat" },
+      el("div", { class: "label" }, t.label),
+      el("div", { class: "value" }, String(t.value)),
+      el("div", { class: "hint" }, t.hint)))),
+    panel("Recent runs", runsTable(runs.slice(0, 8))),
+  );
+  document.getElementById("foot-provider").textContent = summary.provider;
+}
+
+function runsTable(runs) {
+  if (!runs.length) return emptyState("No runs recorded yet. Start one with `ray-unsloth run` or a ServiceClient training loop.");
+  return el("table", {},
+    el("thead", {}, el("tr", {},
+      el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Model"),
+      el("th", { class: "num" }, "LoRA r"), el("th", {}, "Provider"),
+      el("th", {}, "Started"), el("th", {}, "Duration"))),
+    el("tbody", {}, runs.map(run => el("tr", {
+      class: "rowlink",
+      onclick: () => { location.hash = `#/runs/${run.id}`; },
+    },
+      el("td", {}, el("span", { class: "mono" }, run.name || run.id)),
+      el("td", {}, statusChip(run.status)),
+      el("td", {}, run.base_model),
+      el("td", { class: "num" }, run.lora_rank ?? "—"),
+      el("td", {}, run.provider),
+      el("td", {}, fmt.ago(run.created_at)),
+      el("td", {}, fmt.dur(run.created_at, run.finished_at))))));
+}
+
+async function viewRuns() {
+  const runs = await api("/api/runs");
+  $main.replaceChildren(
+    pageHeader("Runs", `${runs.length} recorded`),
+    panel(null, runsTable(runs)));
+}
+
+async function viewRunDetail(runId) {
+  async function render() {
+    let detail;
+    try { detail = await api(`/api/runs/${encodeURIComponent(runId)}`); }
+    catch { $main.replaceChildren(pageHeader("Run not found", runId)); return; }
+    const { run, metrics, logs, checkpoints } = detail;
+    const lossPoints = [];
+    let optimSteps = 0;
+    for (const row of metrics) {
+      if (row.event === "forward_backward" && typeof row.loss === "number") {
+        lossPoints.push({ y: row.loss, label: `pass ${lossPoints.length + 1}` });
+      }
+      if (row.event === "optim_step") optimSteps += 1;
+    }
+    const scrolled = document.scrollingElement.scrollTop;
+    $main.replaceChildren(
+      pageHeader(run.name || run.id, `${run.base_model} · ${run.provider}`,
+        statusChip(run.status)),
+      el("div", { class: "cards" },
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Latest loss"),
+          el("div", { class: "value" }, lossPoints.length ? fmt.num(lossPoints[lossPoints.length - 1].y) : "—"),
+          el("div", { class: "hint" }, `${lossPoints.length} forward/backward passes`)),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Optimizer steps"),
+          el("div", { class: "value" }, String(optimSteps)), el("div", { class: "hint" }, "optim_step calls")),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Checkpoints"),
+          el("div", { class: "value" }, String(checkpoints.length)), el("div", { class: "hint" }, "saved by this run")),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Duration"),
+          el("div", { class: "value" }, fmt.dur(run.created_at, run.finished_at)),
+          el("div", { class: "hint" }, run.status === "running" ? "still running" : `finished ${fmt.ago(run.finished_at)}`))),
+      panel("Training loss", lossChart(lossPoints)),
+      el("div", { class: "grid2" },
+        panel("Logs", logsBox(logs)),
+        panel("Run checkpoints", checkpointsTable(checkpoints, { compact: true }))),
+      panel("Run details", kvList({
+        run_id: run.id, session_id: run.session_id, provider: run.provider,
+        base_model: run.base_model, lora_rank: run.lora_rank,
+        created: fmt.when(run.created_at),
+        metadata: Object.keys(run.metadata || {}).length ? JSON.stringify(run.metadata) : "—",
+      })),
+    );
+    document.scrollingElement.scrollTop = scrolled;
+    if (run.status === "running" && location.hash === `#/runs/${runId}`) {
+      livePoll = setTimeout(render, 2500);
+    }
+  }
+  await render();
+}
+
+function logsBox(logs) {
+  if (!logs.length) return emptyState("No log lines.");
+  const box = el("div", { class: "logbox" });
+  for (const row of logs.slice(-200)) {
+    box.append(el("div", { class: row.level !== "info" ? row.level : "" },
+      el("span", { class: "t" }, fmt.when(row.time)), row.message));
+  }
+  queueMicrotask(() => { box.scrollTop = box.scrollHeight; });
+  return box;
+}
+
+function kvList(obj) {
+  const dl = el("dl", { class: "kv" });
+  for (const [k, v] of Object.entries(obj)) {
+    dl.append(el("dt", {}, k), el("dd", {}, v == null ? "—" : String(v)));
+  }
+  return dl;
+}
+
+function checkpointsTable(records, { compact = false } = {}) {
+  if (!records.length) return emptyState("No checkpoints recorded.");
+  return el("table", {},
+    el("thead", {}, el("tr", {},
+      el("th", {}, "Path"), el("th", {}, "Kind"), el("th", { class: "num" }, "Step"),
+      compact ? null : el("th", {}, "Run"),
+      el("th", {}, "Saved"), el("th", {}, ""))),
+    el("tbody", {}, records.map(rec => el("tr", {},
+      el("td", {}, el("span", { class: "mono path", title: rec.path }, fmt.short(rec.path))),
+      el("td", {}, rec.kind),
+      el("td", { class: "num" }, rec.step ?? "—"),
+      compact ? null : el("td", {}, rec.run_id ? el("a", { href: `#/runs/${rec.run_id}` }, el("span", { class: "mono" }, rec.run_id)) : "—"),
+      el("td", {}, fmt.ago(rec.created_at)),
+      el("td", {}, el("button", {
+        class: "linky", type: "button",
+        onclick: () => { location.hash = `#/checkpoints/${encodeURIComponent(rec.path)}`; },
+      }, "lineage"))))));
+}
+
+async function viewCheckpoints() {
+  const records = await api("/api/checkpoints");
+  $main.replaceChildren(
+    pageHeader("Checkpoints", `${records.length} indexed · parent links form training lineage`),
+    panel(null, checkpointsTable(records)));
+}
+
+async function viewLineage(path) {
+  const chain = await api(`/api/checkpoints/lineage?path=${encodeURIComponent(path)}`);
+  const body = el("div", { class: "lineage" });
+  if (!chain.length) body.append(emptyState("This checkpoint is not in the index."));
+  chain.forEach((rec, i) => {
+    body.append(el("div", { class: "node" },
+      el("div", { class: "rail" }, el("span", { class: "pt" }), i < chain.length - 1 ? el("span", { class: "stem" }) : null),
+      el("div", { class: "body" },
+        el("div", {}, el("span", { class: "mono path" }, rec.path)),
+        el("div", { class: "muted", style: "font-size:12px" },
+          `${rec.kind} · step ${rec.step ?? "—"} · ${fmt.when(rec.created_at)}`,
+          rec.run_id ? el("span", {}, " · ", el("a", { href: `#/runs/${rec.run_id}` }, "run")) : null))));
+  });
+  $main.replaceChildren(
+    pageHeader("Checkpoint lineage", "oldest ancestor first"),
+    panel(null, body),
+    el("a", { href: "#/checkpoints" }, "← all checkpoints"));
+}
+
+async function viewEvals() {
+  const evals = await api("/api/evals");
+  const best = evals.length ? Math.max(...evals.map(e => e.score ?? 0)) : 0;
+  $main.replaceChildren(
+    pageHeader("Evals", `${evals.length} reports`),
+    !evals.length ? panel(null, emptyState("No eval reports. Run one with `ray-unsloth eval <checkpoint> <dataset.jsonl>`.")) :
+    panel(null, el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Eval"), el("th", {}, "Scorer"), el("th", { class: "num" }, "Score"),
+        el("th", {}, ""), el("th", { class: "num" }, "Samples"), el("th", {}, "Checkpoint"), el("th", {}, "When"))),
+      el("tbody", {}, evals.map(report => {
+        const frac = best > 0 ? (report.score / best) : 0;
+        return el("tr", {},
+          el("td", {}, el("span", { class: "mono" }, report.name)),
+          el("td", {}, report.scorer),
+          el("td", { class: "num" }, fmt.num(report.score, 3)),
+          el("td", { style: "min-width:120px" }, el("div", { class: "bar-meter" },
+            el("div", { style: `width:${Math.round(frac * 100)}%;background:var(--series-1)` }))),
+          el("td", { class: "num" }, (report.rows || []).length),
+          el("td", {}, report.checkpoint_path ? el("span", { class: "mono path", title: report.checkpoint_path }, fmt.short(report.checkpoint_path, 30)) : "—"),
+          el("td", {}, fmt.ago(report.created_at)));
+      })))));
+}
+
+async function viewProviders() {
+  const providers = await api("/api/providers");
+  const grid = el("div", { class: "provider-grid" });
+  for (const p of providers) {
+    const caps = p.capabilities;
+    const checks = el("div", { class: "checks" });
+    const entries = Object.entries(p.health.checks || {});
+    if (!entries.length) checks.append(el("span", { class: "pass" }, "✓ no external requirements"));
+    for (const [name, ok] of entries) {
+      checks.append(el("span", { class: ok ? "pass" : "fail" }, `${ok ? "✓" : "✗"} ${name}`));
+    }
+    grid.append(el("div", { class: "card" },
+      el("h3", {}, caps.name,
+        p.selected ? el("span", { class: "chip ok" }, el("span", { class: "dot" }), "selected") : null,
+        el("span", { class: `chip ${caps.kind === "execution" ? "run" : "plan"}` },
+          el("span", { class: "dot" }), caps.kind)),
+      el("p", {}, caps.description),
+      kvList({
+        "multi-node": caps.multi_node ? "yes" : "no",
+        "live sampling": caps.live_policy_sampling ? "yes" : "no",
+        "GPU types": (caps.gpu_types || []).join(", ") || "—",
+        "cost estimates": caps.cost_estimation ? "yes" : "no",
+      }),
+      el("div", { style: "margin-top:10px" }, checks)));
+  }
+  $main.replaceChildren(
+    pageHeader("Providers", "execution providers run sessions; planned providers render launch artifacts (`ray-unsloth plan`)"),
+    grid);
+}
+
+async function viewTopology() {
+  const topo = await api("/api/topology");
+  const fit = topo.fit;
+  const catalogRows = Object.entries(topo.gpu_catalog).map(([name, spec]) => el("tr", {},
+    el("td", {}, el("span", { class: "mono" }, name)),
+    el("td", { class: "num" }, `${spec.memory_gb} GB`),
+    el("td", { class: "num" }, `$${spec.hourly_usd.toFixed(2)}/h`)));
+  $main.replaceChildren(
+    pageHeader("Topology & plan", `what \`ray-unsloth plan\` would do for provider: ${topo.provider}`),
+    panel("Launch steps", el("ol", { style: "padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:13px" },
+      topo.steps.map(step => el("li", {}, step)))),
+    fit ? panel("GPU memory fit (heuristic)",
+      el("div", { class: "cards" },
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Model"), el("div", { class: "value", style: "font-size:16px" }, fit.model)),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "GPU"), el("div", { class: "value", style: "font-size:16px" }, `${fit.gpu} (${fit.gpu_memory_gb} GB)`)),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Estimated need"),
+          el("div", { class: "value", style: "font-size:16px" }, fit.estimated_required_gb ? `${fit.estimated_required_gb.toFixed(1)} GB` : "unknown")),
+        el("div", { class: "card stat" }, el("div", { class: "label" }, "Verdict"),
+          el("div", {}, fit.fits == null
+            ? el("span", { class: "chip plan" }, el("span", { class: "dot" }), "unknown")
+            : fit.fits
+              ? el("span", { class: "chip ok" }, el("span", { class: "dot" }), "fits")
+              : el("span", { class: "chip fail" }, el("span", { class: "dot" }), "does not fit")))),
+      fit.breakdown ? kvList(Object.fromEntries(Object.entries(fit.breakdown).map(([k, v]) => [k, `${v.toFixed(1)} GB`]))) : null,
+      el("p", { class: "muted", style: "margin-top:10px;font-size:12px" }, (fit.assumptions || []).join(" · "))) : null,
+    panel("GPU catalog", el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "GPU"), el("th", { class: "num" }, "Memory"), el("th", { class: "num" }, "Est. on-demand"))),
+      el("tbody", {}, catalogRows))));
+}
+
+async function viewConfig() {
+  const [config, issues] = await Promise.all([api("/api/config"), api("/api/config/validate")]);
+  const issueList = el("div", {});
+  if (!issues.length) issueList.append(el("div", { class: "chip ok", style: "margin-bottom:4px" }, el("span", { class: "dot" }), "configuration is valid"));
+  for (const issue of issues) {
+    issueList.append(el("div", { class: "issue" },
+      el("span", { class: `sev ${issue.severity}` }, issue.severity),
+      el("div", {}, el("span", { class: "mono" }, issue.path), ` — ${issue.message}`,
+        issue.hint ? el("div", { class: "muted", style: "font-size:12px" }, issue.hint) : null)));
+  }
+  $main.replaceChildren(
+    pageHeader("Configuration", `provider: ${config.provider} · edit the YAML file and re-run \`ray-unsloth validate-config\``),
+    panel("Validation", issueList),
+    el("div", { class: "grid2" },
+      panel("Model", kvList(config.model)),
+      panel("LoRA", kvList(config.lora))),
+    panel("Resources", kvList(config.resources)));
+}
+
+async function viewLosses() {
+  const losses = await api("/api/losses");
+  $main.replaceChildren(
+    pageHeader("Loss registry", "select with loss_fn=\"<name>\" — register new policy losses via ray_unsloth.losses.register_loss"),
+    panel(null, el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Name"), el("th", {}, "Kind"), el("th", {}, "Required inputs"),
+        el("th", {}, "Config defaults"), el("th", {}, "Description"))),
+      el("tbody", {}, losses.map(spec => el("tr", {},
+        el("td", {}, el("span", { class: "mono" }, spec.name)),
+        el("td", {}, spec.kind),
+        el("td", {}, el("span", { class: "mono" }, spec.required_inputs.join(", ") || "—")),
+        el("td", {}, el("span", { class: "mono" }, Object.entries(spec.config_defaults).map(([k, v]) => `${k}=${v}`).join(" ") || "—")),
+        el("td", {}, spec.description)))))));
+}
+
+/* ---------- router ---------- */
+const routes = [
+  [/^#?\/?$/, () => viewOverview(), "overview"],
+  [/^#\/runs\/(.+)$/, m => viewRunDetail(decodeURIComponent(m[1])), "runs"],
+  [/^#\/runs$/, () => viewRuns(), "runs"],
+  [/^#\/checkpoints\/(.+)$/, m => viewLineage(decodeURIComponent(m[1])), "checkpoints"],
+  [/^#\/checkpoints$/, () => viewCheckpoints(), "checkpoints"],
+  [/^#\/evals$/, () => viewEvals(), "evals"],
+  [/^#\/providers$/, () => viewProviders(), "providers"],
+  [/^#\/topology$/, () => viewTopology(), "topology"],
+  [/^#\/config$/, () => viewConfig(), "config"],
+  [/^#\/losses$/, () => viewLosses(), "losses"],
+];
+async function route() {
+  stopPolling();
+  const hash = location.hash || "#/";
+  for (const [pattern, handler, viewName] of routes) {
+    const match = hash.match(pattern);
+    if (match) {
+      document.querySelectorAll("nav a.item").forEach(a =>
+        a.classList.toggle("active", a.dataset.view === viewName));
+      try { await handler(match); }
+      catch (err) {
+        $main.replaceChildren(pageHeader("Something went wrong", String(err)),
+          el("p", { class: "muted" }, "Is the API server running? Start it with `ray-unsloth serve-ui`."));
+      }
+      return;
+    }
+  }
+  location.hash = "#/";
+}
+addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

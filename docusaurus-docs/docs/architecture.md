@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # Architecture
 
-Three layers: a **Tinker-shaped client API**, a **Ray/Modal runtime**, and a **Unsloth GPU engine**. Your Python loop calls the clients; the clients route to actors; the actors run Unsloth.
+Three layers: a **Tinker-shaped client API**, a **provider-neutral runtime**, and a **training/sampling engine**. Your Python loop calls the clients; providers create sessions; sessions route to actors; actors run Unsloth or the fake CI backend.
 
 <div class="doc-callout doc-callout--tip">
 
@@ -23,24 +23,34 @@ flowchart TB
         RC["RestClient"]
     end
 
-    subgraph L2["Layer 2 · Runtime"]
-        Ray["RaySession"]
-        Modal["ModalSession"]
+    subgraph L2["Layer 2 · Providers + Runtime"]
+        RP["RuntimeProvider registry"]
+        Ray["local-ray"]
+        Modal["modal"]
+        Fake["fake"]
+        Planned["skypilot / kuberay / slurm / runpod plans"]
     end
 
     subgraph L3["Layer 3 · Engine"]
         UE["UnslothEngine"]
+        FE["FakeEngine"]
     end
 
-    SC --> Ray
-    SC --> Modal
+    SC --> RP
+    RP --> Ray
+    RP --> Modal
+    RP --> Fake
+    RP --> Planned
     TC --> Ray
     TC --> Modal
+    TC --> Fake
     SamC --> Ray
     SamC --> Modal
+    SamC --> Fake
     RC -.->|manifest scan| Ray
     Ray --> UE
     Modal --> UE
+    Fake --> FE
 ```
 
 ## Layer 1: public client API
@@ -61,11 +71,14 @@ Every actor call returns a small future wrapper:
 
 ## Layer 2: runtime sessions
 
-Runtime selection happens in `ServiceClient.__init__`:
+Runtime selection happens in `ServiceClient.__init__` through provider resolution:
 
 ```python
-self._session = ModalSession(self.config) if self.config.modal.enabled else RaySession(self.config)
+self.provider_name = resolve_provider_name(self.config)
+self._session = self._create_session(self.provider_name)
 ```
+
+The legacy `modal.enabled` switch still works, but new configs should prefer `provider`.
 
 ### RaySession
 
@@ -92,6 +105,14 @@ flowchart LR
 ```
 
 This lets user code keep the same client calls while the heavy GPU work happens remotely.
+
+### FakeProvider
+
+`FakeProvider` creates in-process trainer and sampler actors. It is intentionally small but real: cross-entropy changes a byte-level bigram table, optimizer steps update parameters, and checkpoints are manifest-compatible. It is the default backend for CLI/UI/eval/export tests.
+
+### Planned providers
+
+`skypilot`, `kuberay`, `slurm`, and `runpod` implement capability discovery, config validation, GPU-fit estimates, and launch artifact rendering. They do not provision clusters directly yet; their plans show how to launch a Ray head and attach with `provider: local-ray`.
 
 ## Layer 3: UnslothEngine
 
@@ -155,6 +176,20 @@ Supported path forms:
 - `local://...`.
 - `tinker://local/...`.
 - Other `tinker://...` values are mapped into `checkpoints/tinker/...` for local compatibility.
+
+## Run store and control plane
+
+The client layer records run metadata, metrics, logs, checkpoint lineage, and eval reports into `<checkpoint_root>/_store`. The CLI and UI read this store directly, so workflows work without a database or daemon:
+
+```mermaid
+flowchart LR
+    TC["TrainingClient"] --> RR["RunRecorder"]
+    RR --> RS["RunStore JSON/JSONL"]
+    CLI["ray-unsloth CLI"] --> RS
+    UI["FastAPI UI"] --> RS
+    Eval["Eval runner"] --> RS
+    RS --> CP["Checkpoints + lineage"]
+```
 
 ## Distributed training architecture
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import torch
 
 from ray_unsloth.config import LoRAConfig, ModelConfig, SpeedConfig
+from ray_unsloth.losses import LossSpec, register_loss
 from ray_unsloth.runtime.unsloth.engine import UnslothEngine
 from ray_unsloth.types import AdamParams, Datum, ModelInput, SamplingParams, TensorData
 
@@ -59,7 +60,7 @@ class FakeGenerateModel:
     def generate(self, **kwargs):
         self.generate_kwargs = kwargs
         scores = []
-        for token in (11, 12):
+        for _token in (11, 12):
             score = torch.full((2, 100), -100.0)
             score[:, 77] = 0.0
             scores.append(score)
@@ -168,7 +169,7 @@ def test_load_model_uses_model_specific_unsloth_and_lora_config(monkeypatch, tmp
 
     monkeypatch.setitem(sys.modules, "unsloth", SimpleNamespace(FastLanguageModel=LoadingFastLanguageModel))
 
-    engine = UnslothEngine(
+    UnslothEngine(
         session_id="train-1",
         model_config=ModelConfig(
             base_model="LiquidAI/LFM2.5-1.2B-Instruct",
@@ -741,6 +742,41 @@ def test_policy_loss_returns_logprobs_and_ratios():
     assert loss_outputs[0]["ratios"].tolist()[1] > 0.0
 
 
+def test_policy_loss_uses_registered_custom_loss():
+    def token_loss(*, ratio, advantages, current_logprobs, config):
+        del ratio, current_logprobs
+        return -config["scale"] * advantages
+
+    register_loss(
+        LossSpec(
+            name="unit_custom_policy",
+            kind="policy_gradient",
+            description="test-only custom policy loss",
+            required_inputs=("target_tokens", "logprobs", "advantages"),
+            config_defaults={"scale": 2.0},
+            token_loss=token_loss,
+        ),
+        replace=True,
+    )
+    engine = UnslothEngine.__new__(UnslothEngine)
+    engine.model = FakeLossModel()
+    engine.tokenizer = FakeTokenizer()
+    datum = Datum(
+        model_input=ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": TensorData(data=[3, 4], dtype="int64", shape=[2]),
+            "logprobs": TensorData(data=[0.0, -1.0], dtype="float32", shape=[2]),
+            "advantages": TensorData(data=[0.0, 1.5], dtype="float32", shape=[2]),
+        },
+    )
+
+    loss, _outputs, logprobs, ratios = engine._policy_loss([datum], loss_fn="unit_custom_policy")
+
+    assert torch.isclose(loss, torch.tensor(-3.0, dtype=loss.dtype))
+    assert logprobs[0, 1] < 0
+    assert ratios[0, 1] > 0
+
+
 def test_policy_loss_uses_logits_to_keep_for_completion_suffix():
     engine = UnslothEngine.__new__(UnslothEngine)
     engine.model = LogitsToKeepLossModel()
@@ -839,3 +875,32 @@ def test_packed_policy_loss_matches_padded_loss():
     assert torch.allclose(packed_loss, padded_loss)
     assert torch.allclose(packed_logprobs, padded_logprobs)
     assert torch.allclose(packed_ratios, padded_ratios)
+
+
+def test_save_weights_promotes_active_adapter_to_top_level(tmp_path):
+    """Restored clients carry a second PEFT adapter; the checkpoint's top-level
+    adapter files must be the ACTIVE (trained) adapter, not the fresh default."""
+    from ray_unsloth.runtime.unsloth.engine.core import _promote_active_adapter
+
+    checkpoint = tmp_path / "ckpt"
+    nested = checkpoint / "ray_unsloth_step_51"
+    nested.mkdir(parents=True)
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"UNTRAINED")
+    (checkpoint / "adapter_config.json").write_text('{"r": 4, "name": "default"}')
+    (nested / "adapter_model.safetensors").write_bytes(b"TRAINED")
+    (nested / "adapter_config.json").write_text('{"r": 4, "name": "step51"}')
+
+    class _Model:
+        active_adapter = "ray_unsloth_step_51"
+
+    _promote_active_adapter(_Model(), checkpoint)
+
+    assert (checkpoint / "adapter_model.safetensors").read_bytes() == b"TRAINED"
+    assert "step51" in (checkpoint / "adapter_config.json").read_text()
+
+    class _DefaultModel:
+        active_adapter = "default"
+
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"CURRENT")
+    _promote_active_adapter(_DefaultModel(), checkpoint)
+    assert (checkpoint / "adapter_model.safetensors").read_bytes() == b"CURRENT"

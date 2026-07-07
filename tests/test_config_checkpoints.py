@@ -200,18 +200,21 @@ def test_engine_bare_checkpoint_names_are_scoped_by_session(tmp_path: Path):
     engine.session_id = "train-tenant-a"
     engine.step = 0
 
-    assert engine._checkpoint_target("shared-name", prefix="state") == (tmp_path / "train-tenant-a" / "shared-name").resolve()
+    assert (
+        engine._checkpoint_target("shared-name", prefix="state")
+        == (tmp_path / "train-tenant-a" / "shared-name").resolve()
+    )
     assert engine._checkpoint_target(str(tmp_path / "explicit"), prefix="state") == (tmp_path / "explicit").resolve()
     assert engine._checkpoint_target("nested/explicit", prefix="state") == (Path("nested/explicit").resolve())
-    assert engine._checkpoint_target(f"tinker://local/{tmp_path / 'uri'}", prefix="state") == (tmp_path / "uri").resolve()
+    assert (
+        engine._checkpoint_target(f"tinker://local/{tmp_path / 'uri'}", prefix="state") == (tmp_path / "uri").resolve()
+    )
 
 
 def test_engine_checkpoint_manifest_validation_names_mismatched_lora_fields(tmp_path: Path):
     engine = UnslothEngine.__new__(UnslothEngine)
     engine.model_config = RuntimeConfig.from_dict({"model": {"base_model": "base/model"}}).model
-    engine.lora_config = RuntimeConfig.from_dict(
-        {"lora": {"rank": 8, "target_modules": ["q_proj", "v_proj"]}}
-    ).lora
+    engine.lora_config = RuntimeConfig.from_dict({"lora": {"rank": 8, "target_modules": ["q_proj", "v_proj"]}}).lora
 
     with pytest.raises(CheckpointError) as rank_exc:
         engine._validate_checkpoint_manifest(

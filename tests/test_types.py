@@ -112,9 +112,10 @@ def test_tensor_data_from_array_helpers_round_trip():
 
 
 def test_tinker_import_alias_exposes_types():
+    from tinker.types.tensor_data import TensorData as TinkerTensorData
+
     import tinker
     from tinker.lib.public_interfaces import APIFuture
-    from tinker.types.tensor_data import TensorData as TinkerTensorData
 
     assert tinker.ModelInput.from_ints([1]).to_ints() == [1]
     assert tinker.types.EncodedTextChunk(tokens=[1]).length == 1

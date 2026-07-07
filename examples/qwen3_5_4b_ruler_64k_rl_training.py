@@ -41,7 +41,6 @@ from ray_unsloth import (
 )
 from ray_unsloth.download import modal_volume_get_command
 
-
 _HELPER_PATH = Path(__file__).with_name("qwen3_5_9b_rl_training.py")
 _HELPER_SPEC = importlib.util.spec_from_file_location("qwen3_5_9b_rl_training_helpers", _HELPER_PATH)
 if _HELPER_SPEC is None or _HELPER_SPEC.loader is None:
@@ -453,7 +452,7 @@ async def collect_rollouts(
                 reward=reward,
                 advantage=advantage,
             )
-            for (sequence, text, reward), advantage in zip(completions, advantages)
+            for (sequence, text, reward), advantage in zip(completions, advantages, strict=False)
         ]
         rollouts.append(
             RulerRollout(
@@ -709,7 +708,9 @@ async def train(args: argparse.Namespace) -> None:
                 step_start=t0,
                 token_totals=token_totals,
             )
-            datums = [datum for rollout in rollouts for datum in rollout_to_datums(rollout, max_train_tokens=max_train_tokens)]
+            datums = [
+                datum for rollout in rollouts for datum in rollout_to_datums(rollout, max_train_tokens=max_train_tokens)
+            ]
             expert_datums = [
                 datum
                 for datum in (

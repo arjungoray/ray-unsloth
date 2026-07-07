@@ -34,7 +34,6 @@ import yaml
 from ray_unsloth import AdamParams, Datum, EncodedTextChunk, ModelInput, SamplingParams, ServiceClient, TensorData
 from ray_unsloth.download import modal_volume_get_command
 
-
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="Calling super")
 
@@ -128,7 +127,7 @@ class WandbLogger:
         settings: dict[str, Any],
         config_path: str,
         run_config: dict[str, Any],
-    ) -> "WandbLogger":
+    ) -> WandbLogger:
         wandb_settings = dict(settings.get("wandb", {}))
         enabled = bool(wandb_settings.get("enabled", WANDB_ENABLED))
         if not enabled:
@@ -214,12 +213,17 @@ class WandbLogger:
 
 PROBLEMS = [
     MathProblem("Compute 37 * 24 - 156.", "732"),
-    MathProblem("A sequence starts at 7. Each next term is double the previous term minus 3. What is the 5th term?", "67"),
+    MathProblem(
+        "A sequence starts at 7. Each next term is double the previous term minus 3. What is the 5th term?", "67"
+    ),
     MathProblem("Solve for x: 5x - 7 = 3x + 29.", "18"),
     MathProblem("What is the remainder when 17^3 is divided by 19?", "11"),
     MathProblem("A rectangle has perimeter 90. Its length is 3 more than twice its width. What is its area?", "434"),
     MathProblem("The average of 6 numbers is 18. Five numbers are 11, 14, 20, 21, and 25. What is the sixth?", "17"),
-    MathProblem("A jar has red and blue marbles in a 3:5 ratio. After adding 8 red marbles, the ratio is 5:7. What was the initial total number of marbles?", "112"),
+    MathProblem(
+        "A jar has red and blue marbles in a 3:5 ratio. After adding 8 red marbles, the ratio is 5:7. What was the initial total number of marbles?",
+        "112",
+    ),
     MathProblem("Compute 125% of 64, then subtract 17.", "63"),
 ]
 
@@ -650,7 +654,7 @@ async def collect_rollouts(
 
     sample_results = await asyncio.gather(*sample_coros)
     rollouts = []
-    for problem, prompt, sample_result in zip(problems, prompts, sample_results):
+    for problem, prompt, sample_result in zip(problems, prompts, sample_results, strict=False):
         rewards = []
         raw_sequences = []
         for sequence in sample_result.sequences:
@@ -674,7 +678,7 @@ async def collect_rollouts(
                 reward=reward,
                 advantage=advantage,
             )
-            for (sequence, text, reward), advantage in zip(raw_sequences, advantages)
+            for (sequence, text, reward), advantage in zip(raw_sequences, advantages, strict=False)
         ]
         rollouts.append(
             ProblemRollout(

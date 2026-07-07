@@ -32,6 +32,12 @@ service = ServiceClient("configs/example.yaml")
 | `modal` | `ModalConfig` | Modal app, GPU, timeout, volume, Python version. |
 | `checkpoint_root` | `str` | Root path for checkpoint saves. |
 | `supported_models` | `list[str]` | Capability response and advertised aliases. |
+| `provider` | `str \| null` | Runtime provider name. Defaults to `local-ray`, or `modal` when legacy `modal.enabled` is true. |
+| `provider_options` | `dict` | Provider-specific planning options such as `gpu`, `workers`, or `namespace`. |
+| `plugins` | `list[str]` | Python modules imported at config load time; modules can call registry APIs. |
+| `run_name` | `str \| null` | Optional name stored with new run records. |
+| `tracking` | `bool` | Enables local run-store metrics, logs, checkpoint lineage, and eval records. |
+| `tracking_root` | `str \| null` | Where the client-side run store lives. Defaults to `checkpoint_root`; set it when `checkpoint_root` is a remote volume path (e.g. Modal's `/checkpoints`) that isn't writable on the client. |
 
 ## Model selection
 
@@ -167,6 +173,29 @@ Important fields:
 - `max_inputs`: Modal class concurrency for multi-tenant examples.
 - `trainer_pool_key`: lets multiple training sessions target the same warm Modal pool.
 
+## Provider and workflow fields
+
+Modern configs can select providers directly:
+
+```yaml
+provider: fake
+checkpoint_root: checkpoints
+tracking: true
+run_name: local-smoke
+provider_options:
+  gpu: L4
+plugins:
+  - examples.sample_plugin
+```
+
+Provider selection rules:
+
+1. If `provider` is set, that provider is used.
+2. If `provider` is absent and `modal.enabled: true`, the legacy Modal path selects `modal`.
+3. Otherwise the default is `local-ray`.
+
+Use `RuntimeConfig.validate()` or `ray-unsloth validate-config` to get non-throwing validation issues for provider health, DDP compatibility, and GPU-fit estimates.
+
 ## Existing configs
 
 | Config | Purpose |
@@ -177,3 +206,4 @@ Important fields:
 | `configs/qwen3_5_4b_1x_a100_multitenant.yaml` | Two concurrent Qwen3.5 4B SFT tenants on one A100 pool. |
 | `configs/qwen3_5_4b_1x_a100_multitenant_rl.yaml` | Three concurrent RL tenants on one A100 pool. |
 | `configs/qwen3_5_4b_ruler_64k.yaml` | Long-context RULER RL with 64k-style prompts on A100-80GB. |
+| `configs/fake_workflow.yaml` | GPU-free local workflow config for CLI, UI, eval, export, and CI smoke tests. |
