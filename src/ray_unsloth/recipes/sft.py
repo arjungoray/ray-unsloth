@@ -35,14 +35,22 @@ def _strip_trailing_eos(tokens: list[int], tokenizer: Any) -> list[int]:
     return tokens
 
 
-def text_completion_datum(tokenizer: Any, prompt: str, target: str) -> Datum:
-    """Build a prompt-masked completion datum that mirrors the smoke-test helper."""
+def text_completion_datum(tokenizer: Any, prompt: str, target: str, *, append_eos: bool = True) -> Datum:
+    """Build a prompt-masked completion datum that mirrors the smoke-test helper.
+
+    ``append_eos`` (default) terminates the target with the tokenizer's EOS so
+    the model learns to STOP after the completion instead of rambling into
+    meta-commentary — essential for rewrite-style tasks.
+    """
 
     prompt_encoded = tokenizer(prompt, add_special_tokens=True)
     full_encoded = tokenizer(prompt + target, add_special_tokens=True)
 
     prompt_tokens = _strip_trailing_eos(_token_ids(prompt_encoded), tokenizer)
     full_tokens = _token_ids(full_encoded)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if append_eos and eos_token_id is not None and (not full_tokens or full_tokens[-1] != eos_token_id):
+        full_tokens = [*full_tokens, int(eos_token_id)]
     labels = [-100] * len(prompt_tokens)
     labels.extend(full_tokens[len(prompt_tokens) :])
 

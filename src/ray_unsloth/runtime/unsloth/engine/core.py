@@ -1423,6 +1423,7 @@ class UnslothEngine:
         with atomic_checkpoint_dir(target) as tmp_dir:
             self._unwrap_model().save_pretrained(str(tmp_dir))
             self.tokenizer.save_pretrained(str(tmp_dir))
+            _promote_active_adapter(self._unwrap_model(), tmp_dir)
             if include_optimizer:
                 optimizer = self._ensure_optimizer()
                 torch.save(optimizer.state_dict(), tmp_dir / "optimizer.pt")
@@ -1545,3 +1546,32 @@ class UnslothEngine:
             url=None,
             checkpoint=save.checkpoint,
         )
+
+
+def _promote_active_adapter(model: Any, checkpoint_dir: Path) -> None:
+    """Ensure the checkpoint's top-level adapter files are the ACTIVE adapter.
+
+    A client restored from a checkpoint carries two PEFT adapters: the fresh
+    untrained "default" and the loaded/trained "ray_unsloth_step_N".
+    ``save_pretrained`` writes "default" at the top level and the trained one
+    into a nested directory — so every downstream consumer (sampler restore,
+    exports, GGUF conversion) silently reads UNTRAINED weights. Promote the
+    active adapter's files to the top level after saving.
+    """
+    import shutil
+
+    active = getattr(model, "active_adapter", None)
+    if callable(active):  # some PEFT versions expose a method
+        try:
+            active = active()
+        except Exception:
+            return
+    if not isinstance(active, str) or active == "default":
+        return
+    nested = checkpoint_dir / active
+    if not nested.is_dir():
+        return
+    for name in ("adapter_model.safetensors", "adapter_model.bin", "adapter_config.json"):
+        source = nested / name
+        if source.exists():
+            shutil.copy2(source, checkpoint_dir / name)

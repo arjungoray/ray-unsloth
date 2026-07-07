@@ -522,7 +522,18 @@ def _build_rubric(
 
     def content(*, prompt: str, completion_text: str, context: dict[str, Any] | None = None, **_: Any) -> float:
         source_text = (context or {}).get("source_text", "")
-        banned_phrases = ("as an ai", "here is", "here's a", "i've made sure", "i have made sure", "original message")
+        banned_phrases = (
+            "as an ai",
+            "here is",
+            "here's a",
+            "made sure",
+            "original message",
+            "core information",
+            "intended meaning",
+            "i kept the",
+            "i preserved",
+            "key points",
+        )
         banned = any(phrase in completion_text.lower() for phrase in banned_phrases)
         if banned:
             return 0.0

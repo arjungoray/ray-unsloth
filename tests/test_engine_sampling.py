@@ -875,3 +875,32 @@ def test_packed_policy_loss_matches_padded_loss():
     assert torch.allclose(packed_loss, padded_loss)
     assert torch.allclose(packed_logprobs, padded_logprobs)
     assert torch.allclose(packed_ratios, padded_ratios)
+
+
+def test_save_weights_promotes_active_adapter_to_top_level(tmp_path):
+    """Restored clients carry a second PEFT adapter; the checkpoint's top-level
+    adapter files must be the ACTIVE (trained) adapter, not the fresh default."""
+    from ray_unsloth.runtime.unsloth.engine.core import _promote_active_adapter
+
+    checkpoint = tmp_path / "ckpt"
+    nested = checkpoint / "ray_unsloth_step_51"
+    nested.mkdir(parents=True)
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"UNTRAINED")
+    (checkpoint / "adapter_config.json").write_text('{"r": 4, "name": "default"}')
+    (nested / "adapter_model.safetensors").write_bytes(b"TRAINED")
+    (nested / "adapter_config.json").write_text('{"r": 4, "name": "step51"}')
+
+    class _Model:
+        active_adapter = "ray_unsloth_step_51"
+
+    _promote_active_adapter(_Model(), checkpoint)
+
+    assert (checkpoint / "adapter_model.safetensors").read_bytes() == b"TRAINED"
+    assert "step51" in (checkpoint / "adapter_config.json").read_text()
+
+    class _DefaultModel:
+        active_adapter = "default"
+
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"CURRENT")
+    _promote_active_adapter(_DefaultModel(), checkpoint)
+    assert (checkpoint / "adapter_model.safetensors").read_bytes() == b"CURRENT"

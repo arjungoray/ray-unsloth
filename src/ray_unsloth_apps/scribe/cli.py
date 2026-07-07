@@ -132,7 +132,7 @@ def cmd_rewrite(args: argparse.Namespace) -> int:
 
     from ray_unsloth import SamplingParams, ServiceClient
     from ray_unsloth.types import ModelInput
-    from ray_unsloth_apps.scribe.rewrite import rewrite_prompt
+    from ray_unsloth_apps.scribe.rewrite import rewrite_prompt, strip_meta_trailer
 
     if args.text:
         source = args.text
@@ -164,7 +164,7 @@ def cmd_rewrite(args: argparse.Namespace) -> int:
         for index, sequence in enumerate(response.sequences, start=1):
             if len(response.sequences) > 1:
                 print(f"--- candidate {index} ---")
-            print((sequence.text or "").strip())
+            print(strip_meta_trailer((sequence.text or "").strip()))
     finally:
         service.close()
     return 0

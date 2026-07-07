@@ -137,6 +137,17 @@ STOPWORDS = frozenset(
 )
 
 
+_META_TRAILER = re.compile(
+    r"(?:^|\n\n)\s*(?:i(?:'ve| have)? (?:made sure|kept|preserved|maintained)|note:|as requested)[^\0]*$",
+    re.IGNORECASE,
+)
+
+
+def strip_meta_trailer(text: str) -> str:
+    """Drop trailing self-commentary ("I made sure to preserve...") from a rewrite."""
+    return _META_TRAILER.sub("", text).strip()
+
+
 def rewrite_prompt(source: str) -> str:
     return f"{REWRITE_INSTRUCTION}\n\nText:\n{source.strip()}\n\nRewritten:\n"
 
