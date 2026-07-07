@@ -11,6 +11,7 @@ from ray_unsloth.clients._remote import resolve
 from ray_unsloth.recipes.advantages import drop_uniform_groups, group_relative
 from ray_unsloth.recipes.rewards import Rubric
 from ray_unsloth.recipes.rollouts import collect_group, rollout_to_datum
+from ray_unsloth.recipes.sft import _batch_token_normalized
 
 
 @dataclass(slots=True)
@@ -176,6 +177,10 @@ def _scaled_anchor_batch(
     sample_size: int,
 ) -> list[Datum]:
     batch = list(anchor_datums) if len(anchor_datums) <= sample_size else rng.sample(anchor_datums, sample_size)
+    # Normalize to per-token mean scale BEFORE applying the anchor weight, so the
+    # anchor contributes ~anchor_weight x mean-token CE instead of a raw sum that
+    # grows with target length and swamps the policy loss (NaNs in bf16).
+    batch = _batch_token_normalized(batch)
     scaled: list[Datum] = []
     for datum in batch:
         scaled.append(_scale_datum_weights(datum, scale))
