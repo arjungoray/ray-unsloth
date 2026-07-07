@@ -108,14 +108,23 @@ def stage_eval(
         )
         for source in sources
     ]
-    generations = _generate_samples(
-        sampling_client,
-        eval_specs,
-        max_samples=config.eval_generations,
-        max_tokens=config.max_tokens,
-        seed=config.seed,
-    )
-    paired = list(zip(sources, generations, strict=False))
+    paired: list[tuple[str, str]] = []
+    rng = random.Random(config.seed)
+    for spec in eval_specs:
+        if len(paired) >= config.eval_generations:
+            break
+        params = SamplingParams(
+            max_tokens=config.max_tokens, temperature=0.8, top_p=0.95, seed=rng.randint(0, 1_000_000)
+        )
+        response = sampling_client.sample(
+            ModelInput.from_ints(spec.prompt_tokens or []), num_samples=1, sampling_params=params
+        ).result()
+        generation = str(response.sequences[0].text or "").strip() if response.sequences else ""
+        if generation:
+            # Alignment is load-bearing: content scores are only meaningful
+            # against the generation's OWN source (the run-5 eval bug).
+            paired.append((str(spec.context.get("source_text", "")), generation))
+    generations = [generation for _source, generation in paired]
     report = {
         "checkpoint": checkpoint,
         "app": "scribe",
@@ -513,7 +522,8 @@ def _build_rubric(
 
     def content(*, prompt: str, completion_text: str, context: dict[str, Any] | None = None, **_: Any) -> float:
         source_text = (context or {}).get("source_text", "")
-        banned = any(phrase in completion_text.lower() for phrase in ("as an ai", "here is", "here's a"))
+        banned_phrases = ("as an ai", "here is", "here's a", "i've made sure", "i have made sure", "original message")
+        banned = any(phrase in completion_text.lower() for phrase in banned_phrases)
         if banned:
             return 0.0
         if not source_text:
@@ -535,7 +545,7 @@ def _build_rubric(
             RubricTerm(name="stylometry", fn=stylometry, weight=0.20, z_normalize=False),
             # Content preservation is the anti-gaming keystone for rewriting:
             # style terms alone reward ignoring the source entirely.
-            RubricTerm(name="content", fn=content, weight=0.25, z_normalize=False),
+            RubricTerm(name="content", fn=content, weight=0.25, z_normalize=False, override_below=0.05),
             RubricTerm(name="fluency", fn=fluency, weight=0.10, z_normalize=False),
             RubricTerm(name="length", fn=length, weight=0.05, z_normalize=False),
             RubricTerm(name="anti_copy", fn=anti_copy, weight=0.10, z_normalize=False, override_below=0.5),

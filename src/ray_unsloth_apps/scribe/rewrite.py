@@ -245,7 +245,9 @@ def neutralize_passages(
                 num_samples=1,
                 sampling_params=SamplingParams(
                     max_tokens=max_tokens,
-                    temperature=0.7,
+                    # Ramp temperature across attempts: diverse paraphrases of
+                    # the same passage are cheap augmentation for tiny corpora.
+                    temperature=0.7 + 0.2 * attempt,
                     seed=seed + index * 17 + attempt,
                 ),
             ).result()
