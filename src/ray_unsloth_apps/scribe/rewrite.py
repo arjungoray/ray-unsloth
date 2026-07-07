@@ -232,8 +232,16 @@ def neutralize_passages(
     tokenizer = sampling_client.get_tokenizer().result()
     pairs: list[RewritePair] = []
     seen_sources: set[str] = set()
-    for index, passage in enumerate(passages):
-        text = passage.text if hasattr(passage, "text") else str(passage)
+    targets: list[str] = []
+    for passage in passages:
+        passage_text = passage.text if hasattr(passage, "text") else str(passage)
+        targets.append(passage_text)
+        # Short sources must be in-distribution too: pasted text comes in all
+        # lengths, so also train on 1-2 sentence slices of each passage.
+        slice_text = _short_slice(passage_text)
+        if slice_text:
+            targets.append(slice_text)
+    for index, text in enumerate(targets):
         got_model_pair = False
         for attempt in range(max(2, per_passage + 1)):
             prompt_input = renderer.build_generation_prompt(
@@ -306,6 +314,19 @@ def _shares_verbatim_run(candidate: str, original: str, n: int = 12) -> bool:
     """True when the two texts share any verbatim n-word run (identity signal)."""
     original_runs = _word_runs(original, n)
     return any(run in original_runs for run in _word_runs(candidate, n))
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _short_slice(text: str) -> str | None:
+    """A 1-2 sentence slice of a passage, when it has enough sentences to spare."""
+    sentences = [s for s in _SENTENCE_SPLIT.split(text) if s.strip()]
+    if len(sentences) < 3:
+        return None
+    take = 2 if len(sentences[0].split()) < 8 else 1
+    slice_text = " ".join(sentences[:take]).strip()
+    return slice_text if len(slice_text.split()) >= 5 else None
 
 
 def _word_runs(text: str, n: int) -> set[str]:

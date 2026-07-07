@@ -541,11 +541,11 @@ def _build_rubric(
 
     return Rubric(
         terms=[
-            RubricTerm(name="style_clf", fn=style_clf, weight=0.30, z_normalize=False),
+            RubricTerm(name="style_clf", fn=style_clf, weight=0.25, z_normalize=False),
             RubricTerm(name="stylometry", fn=stylometry, weight=0.20, z_normalize=False),
             # Content preservation is the anti-gaming keystone for rewriting:
             # style terms alone reward ignoring the source entirely.
-            RubricTerm(name="content", fn=content, weight=0.25, z_normalize=False, override_below=0.05),
+            RubricTerm(name="content", fn=content, weight=0.30, z_normalize=False, override_below=0.05),
             RubricTerm(name="fluency", fn=fluency, weight=0.10, z_normalize=False),
             RubricTerm(name="length", fn=length, weight=0.05, z_normalize=False),
             RubricTerm(name="anti_copy", fn=anti_copy, weight=0.10, z_normalize=False, override_below=0.5),
